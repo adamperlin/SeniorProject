@@ -1,0 +1,24 @@
+#lang typed/racket
+
+(provide parse)
+
+(define-type UnOp (U '! '~ '-))
+(define-type BinOp (U '+ '- '* '/ '% '<< '>>
+    '< '> 'eq? 'ne? 'band 'xor 'bor 'and 'or))
+(define-type Validation (U 'requires 'ensures 'invariant 'assert) )
+(struct IdExpr ([name : String]))
+(struct NumExpr ([val : Integer]))
+(struct UnOpExpr ([op : UnOp] [expr : Expr]))
+(struct BinOpExpr ([op : BinOp] [expr : Expr]))
+
+(define-type Expr (U IdExpr NumExpr UnOpExpr))
+
+(struct Anno ([kind : Validation] [expr : Expr]))
+
+(: parse (String -> Real))
+(define (parse s) 
+    (match (string->number s)
+        [(? real? r) r]
+        [other (error 'invalid)]
+))
+
