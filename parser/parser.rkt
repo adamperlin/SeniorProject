@@ -1,14 +1,15 @@
 #lang typed/racket
 
-(provide parse parse-expr parse-stmt parse-fundef)
+(provide parse-expr parse-stmt parse-fundef)
 (provide Opt Some None)
 (provide
  NumExpr IdExpr ResultExpr BoolExpr BinOpExpr UnOpExpr BoolExpr
  OldExpr IncStmt DecStmt RetStmt WhileStmt IfStmt AssignStmt BeginStmt
- AnnoStmt)
- (provide Fundef)
+ AnnoStmt Expr Type Stmt)
+(provide BinOpExpr-left BinOpExpr-right BinOpExpr-op)
+(provide Fundef)
 
- (provide Decl Anno)
+(provide Decl Anno)
 (require racket/set)
 
 (struct (a) Some ([v : a]) #:transparent)
@@ -39,7 +40,6 @@
 (define-type Type (U BoolType IntType VoidType))
 (define-predicate Type? Type)
 
-;
 
 (define-type Vid Symbol)
 (define-predicate Vid? Vid)
@@ -55,7 +55,6 @@
 (define-type ResultExpr '@result)
 (define-predicate ResultExpr? ResultExpr)
 
-
 (struct Anno ([kind : Validation] [expr : Expr]) #:transparent)
 (struct Decl ([name : Vid] [typ : Type] [val : (Opt Expr)]) #:transparent)
 (define-type DeclBlock (Listof Decl))
@@ -69,7 +68,7 @@
 (struct AssertStmt ([exp : Expr]) #:transparent)
 (struct IncStmt ([lv : LVal]) #:transparent)
 (struct DecStmt ([lv : LVal]) #:transparent)
-(struct Fundef ([id : Symbol] [args : (HashTable Symbol Type)] [rtype : Type] [body : Stmt])
+(struct Fundef ([id : Symbol] [args : (Listof Decl)] [rtype : Type] [body : Stmt])
     #:transparent)
 
 (define (valid-id? [s : Sexp])
@@ -99,7 +98,8 @@
 (define (parse-decl s)
   (match s
     [(list (? valid-id? id) ': (? Type? typ) exp) (Decl id typ (Some (parse-expr exp)))]
-    [(list (? valid-id? id) ': (? Type? typ)) (Decl id typ (None))]))
+    [(list (? valid-id? id) ': (? Type? typ)) (Decl id typ (None))]
+    [other (error 'bad-decl (format "bad decl syntax ~v" s))]))
 
 (: parse-validation (Validation Sexp -> Anno))
 (define (parse-validation v s)
@@ -133,13 +133,12 @@
                                                 (cast e (Listof Sexp)) s)]
     [other (error 'bad-stmt (format "~e" sexp))]))
 
-(: parse-args (Sexp -> (HashTable Symbol Type)))
+(: parse-args (Sexp -> (Listof Decl)))
 (define (parse-args s)
     (match s
         [(list (list (? valid-id? v) ': (? Type? t)) ...) 
-            (make-hash 
                 (map (lambda ([v : Vid] [t : Type]) 
-                    (cons v t)) (cast v (Listof Vid)) (cast t (Listof Type))))]
+                    (Decl v t (None))) (cast v (Listof Vid)) (cast t (Listof Type)))]
         [other (error 'bad-arg-syntax (format "~e" s))]))
 
 (: parse-fundef (Sexp -> Fundef))
@@ -150,10 +149,3 @@
         [(list 'fun (list (? valid-id? id) args ...) body)
             (Fundef id (parse-args args) 'void (parse-stmt body))]
         [other (error 'bad-fundef (format "~e" s))]))
-
-(: parse (String -> Real))
-(define (parse s) 
-    (match (string->number s)
-        [(? real? r) r]
-        [other (error 'invalid)]
-))

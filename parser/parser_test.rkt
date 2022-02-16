@@ -136,12 +136,12 @@
 (check-equal? (parse-fundef 
     '(fun (f [x : int] [b : bool]) -> int
         (return x)))
-    (Fundef 'f (make-hash (list (cons 'x 'int) (cons 'b 'bool))) 'int
+    (Fundef 'f (list (Decl 'x 'int (None)) (Decl 'b 'bool (None))) 'int
         (RetStmt (Some (IdExpr 'x)))))
 
 (check-equal? (parse-fundef
     '(fun (func) (if true (return 3) (return 4))))
-        (Fundef 'func (make-hash) 'void
+        (Fundef 'func '() 'void
             (IfStmt 'true
                 (RetStmt (Some (NumExpr 3))) (Some (RetStmt (Some (NumExpr 4)))))))
     
@@ -149,7 +149,7 @@
 (check-exn (regexp (regexp-quote "bad-stmt")) (lambda () (parse-fundef
     '(fun (f [x : int]) ->))))
 
-(define big-def-ast (Fundef 'sum (make-hash '((n . int))) 'int
+(define big-def-ast (Fundef 'sum (list (Decl 'n 'int (None))) 'int
     (AnnoStmt
         (list
             (Anno 'requires (BinOpExpr '>= (IdExpr 'n) (NumExpr 0)))
