@@ -27,8 +27,8 @@
     (typecheck-expr (UnOpExpr '!
         (IdExpr 'b)) test-env) 'bool)
 
-(check-exn (regexp (regexp-quote "bad operand type for '-: 'bool")) 
-    (lambda () (typecheck-expr (UnOpExpr '- (IdExpr 'b)) test-env)))
+(check-exn (regexp (regexp-quote "bad operand type for 'neg: 'bool")) 
+    (lambda () (typecheck-expr (UnOpExpr 'neg (IdExpr 'b)) test-env)))
 
 ; assignment statement tests
 (check-equal? (typecheck-stmt
@@ -121,6 +121,19 @@
                 (set= num 10)
                 (if isTrue (set*= num 2))) (set+= num 1))) test-env)))
 
+(check-exn (regexp (regexp-quote "bad-annotation")) 
+    (lambda () (typecheck-stmt
+        (parse-stmt '((assert (+ 2 2))
+                        (begin
+                            (set= x 3)))) test-env)))
+
+(define bad-contract '(fun (add1 [x : int]) -> int
+                        (requires (+ x 2))
+                        (return (+ x 1))))
+
+(check-exn (regexp (regexp-quote "bad-contract"))
+    (lambda () (typecheck-function (parse-fundef bad-contract) (hash)))) 
+
 (define test-fn '(fun (max [a : int] [b : int]) -> int 
     (if (> a b)
         (return a)
@@ -129,29 +142,29 @@
 (check-equal? (typecheck-function (parse-fundef '(fun (max [a : int] [b : int]) -> int 
     (if (> a b)
         (return a)
-        (return b))))) (void))
+        (return b)))) (hash)) (hash 'max (FunType '(int int) 'int)))
 
 (check-exn (regexp (regexp-quote "cannot return type 'int from function of type 'void"))
     (lambda () (typecheck-function (parse-fundef '(fun (max [a : int] [b : int]) 
                 (if (> a b)
                     (return a)
-                    (return b)))))))
+                    (return b)))) (hash))))
 
 (define big-def '(fun (sum [n : int]) -> int
-    ((requires (>= n 0))
+    (requires (>= n 0))
      (ensures (eq? @result (/ (* n (+ n 1)) 2)))
-        (begin
-            (declare 
-                [i : int 1]
-                [sum : int 0])
-            (while (<= i n)
-                ((invariant (eq? sum (/ (* i (- i 1)) 2)))
-                    (begin
-                        (set+= sum i)
-                        (set+= i 1))))
-            (return sum)))))
+    (begin
+        (declare 
+            [i : int 1]
+            [sum : int 0])
+        (while (<= i n)
+            ((invariant (eq? sum (/ (* i (- i 1)) 2)))
+                (begin
+                    (set+= sum i)
+                    (set+= i 1))))
+        (return sum))))
 
-(check-equal? (typecheck-function (parse-fundef big-def)) (void))
+(check-equal? (typecheck-function (parse-fundef big-def) (hash)) (hash 'sum (FunType '(int) 'int)))
 
 (check-equal? (check-return-paths (parse-fundef 
     '(fun (f [x : int]) -> int
@@ -201,3 +214,31 @@
         (while (< i 15)
             (set+= i 1))
         (return i))))) (void))
+
+(define top-env 
+    (hash
+        'fn (FunType '(int bool) 'bool)))
+
+(check-equal? (typecheck-expr (CallExpr 'fn (list (NumExpr 5) 'true)) top-env) 'bool)
+(check-exn (regexp (regexp-quote "bad-call")) 
+    (lambda () (typecheck-expr (CallExpr 'fn (list 'false 'true)) top-env)))
+
+(check-equal? (typecheck-stmt
+    (parse-stmt
+        '(begin
+            (declare
+                [b : bool])
+            (set= b (fn 5 false)))) top-env) (void))
+
+(check-equal? (typecheck-stmt
+    (parse-stmt
+        '(begin
+            (fn 5 false))) top-env) (void))
+
+(check-exn (regexp (regexp-quote "bad-assign")) 
+    (lambda () (typecheck-stmt
+        (parse-stmt
+            '(begin
+                (declare
+                    [b : int])
+                (set= b (fn 5 false)))) top-env)))

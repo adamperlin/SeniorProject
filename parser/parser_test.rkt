@@ -35,7 +35,7 @@
 (check-exn (regexp (regexp-quote "bad-expr")) (lambda () (parse-expr '(+ 2))))
 
 ; unary expressions
-(check-equal? (parse-expr '(- 2)) (UnOpExpr '- (NumExpr 2)))
+(check-equal? (parse-expr '(neg 2)) (UnOpExpr 'neg (NumExpr 2)))
 (check-equal? (parse-expr '(! true)) (UnOpExpr '! 'true))
 (check-exn (regexp (regexp-quote "bad-expr")) (lambda () (parse-expr '(! while))))
 
@@ -48,7 +48,7 @@
                            (BinOpExpr '>=
                                       (IdExpr 'x)
                                       (NumExpr 0))))
-(check-exn (regexp (regexp-quote "bad-expr: '(old)")) (lambda () (parse-expr '(old))))
+(check-exn (regexp (regexp-quote "bad-expr: '(@old)")) (lambda () (parse-expr '(@old))))
 
 ; simple statements
 (check-equal? (parse-stmt '(inc x)) (IncStmt 'x))
@@ -60,6 +60,13 @@
 (check-equal? (parse-stmt '(set+= v 3)) (AssignStmt 'set+= 'v (NumExpr 3)))
 (check-equal? (parse-stmt '(set>>= v 2)) (AssignStmt 'set>>= 'v (NumExpr 2)))
 (check-exn (regexp (regexp-quote "bad-stmt")) (lambda () (parse-stmt '(set*= v))))
+
+; call statements
+(check-equal? (parse-stmt '(f 1 2 3)) (CallStmt 'f (list (NumExpr 1) (NumExpr 2) (NumExpr 3))))
+
+(check-equal? (parse-expr '(f (g 4 5 7) (h true))) (CallExpr 'f (list (CallExpr 'g (list (NumExpr 4) (NumExpr 5) (NumExpr 7)))
+                                (CallExpr 'h (list 'true)))))
+(check-equal? (parse-expr '(func)) (CallExpr 'func '()))
 
 ; if statements
 (check-equal? (parse-stmt '(if (< x 10) (set+= x 2) (set-= x 3))) (IfStmt
@@ -101,9 +108,9 @@
 (check-equal? (parse-stmt '(begin (declare [truthy : bool]))) (BeginStmt (list (Decl 'truthy 'bool (None))) '()))
 
 ; annotated statements
-(check-equal? (parse-stmt '((requires (> x 0)) (set= y (- x 1))))
+(check-equal? (parse-stmt '((assert (> x 0)) (set= y (- x 1))))
     (AnnoStmt
-        (list (Anno 'requires (BinOpExpr '> (IdExpr 'x) (NumExpr 0))))
+        (list (Anno 'assert (BinOpExpr '> (IdExpr 'x) (NumExpr 0))))
         (AssignStmt 'set= 'y 
             (BinOpExpr '- 
                 (IdExpr 'x)
@@ -111,16 +118,16 @@
         ))
 
 (check-equal? (parse-stmt '(
-        (ensures (> @result 0))
-        (ensures (< @result z))
+        (assert (> @result 0))
+        (assert (< @result z))
         (begin
             (if (> s z)
                 (set= s (- z 1)))
             (return s))))
         (AnnoStmt
             (list 
-                (Anno 'ensures (BinOpExpr '> '@result (NumExpr 0)))
-                (Anno 'ensures (BinOpExpr '< '@result (IdExpr 'z)))
+                (Anno 'assert (BinOpExpr '> '@result (NumExpr 0)))
+                (Anno 'assert (BinOpExpr '< '@result (IdExpr 'z)))
             )
             (BeginStmt '()
                 (list 
@@ -136,12 +143,12 @@
 (check-equal? (parse-fundef 
     '(fun (f [x : int] [b : bool]) -> int
         (return x)))
-    (Fundef 'f (list (Decl 'x 'int (None)) (Decl 'b 'bool (None))) 'int
+    (Fundef 'f (list (Decl 'x 'int (None)) (Decl 'b 'bool (None))) 'int '() '()
         (RetStmt (Some (IdExpr 'x)))))
 
 (check-equal? (parse-fundef
     '(fun (func) (if true (return 3) (return 4))))
-        (Fundef 'func '() 'void
+        (Fundef 'func '() 'void '() '()
             (IfStmt 'true
                 (RetStmt (Some (NumExpr 3))) (Some (RetStmt (Some (NumExpr 4)))))))
     
@@ -149,51 +156,75 @@
 (check-exn (regexp (regexp-quote "bad-stmt")) (lambda () (parse-fundef
     '(fun (f [x : int]) ->))))
 
+(check-equal? (parse-fundef 
+    '(fun (f [x : int] [b : bool]) -> int
+        (requires (>= x 0))
+        (ensures (>= @result 0))
+        (return x)))
+    (Fundef 'f (list (Decl 'x 'int (None)) (Decl 'b 'bool (None))) 'int
+        (list (Contract 'requires (BinOpExpr '>= (IdExpr 'x) (NumExpr 0))))
+        (list (Contract 'ensures (BinOpExpr '>= '@result (NumExpr 0))))
+        (RetStmt (Some (IdExpr 'x)))))
+
+
+(check-exn (regexp (regexp-quote "bad-stmt")) 
+    (lambda () (parse-fundef 
+        '(fun (f [x : int] [b : bool]) -> int
+            (requires (>= x 0))
+            (ensures (>= @result 0))))))
+
+(check-equal? (parse-fundef 
+    '(fun (g [x : int])
+        (set= x (* 2 x))))
+    (Fundef 'g (list (Decl 'x 'int (None))) 'void '() '()
+        (AssignStmt 'set= 'x (BinOpExpr '* (NumExpr 2) (IdExpr 'x)))))
+
 (define big-def-ast (Fundef 'sum (list (Decl 'n 'int (None))) 'int
-    (AnnoStmt
+    (list 
+        (Contract 'requires (BinOpExpr '>= (IdExpr 'n) (NumExpr 0))))
+    (list
+        (Contract 'ensures (BinOpExpr 'eq?
+                            '@result
+                                (BinOpExpr '/ 
+                                    (BinOpExpr '*
+                                        (IdExpr 'n)
+                                        (BinOpExpr '+
+                                            (IdExpr 'n)
+                                            (NumExpr 1)))
+                                (NumExpr 2)))))
+    (BeginStmt
         (list
-            (Anno 'requires (BinOpExpr '>= (IdExpr 'n) (NumExpr 0)))
-            (Anno 'ensures (BinOpExpr 'eq?
-                                '@result
+            (Decl 'i 'int (Some (NumExpr 1)))
+            (Decl 'sum 'int (Some (NumExpr 0))))
+        (list
+            (WhileStmt (BinOpExpr '<= (IdExpr 'i) (IdExpr 'n))
+                (AnnoStmt
+                    (list
+                        (Anno 'invariant (BinOpExpr 'eq?
+                                (IdExpr 'sum)
                                     (BinOpExpr '/ 
                                         (BinOpExpr '*
-                                            (IdExpr 'n)
-                                            (BinOpExpr '+
-                                                (IdExpr 'n)
+                                            (IdExpr 'i)
+                                            (BinOpExpr '-
+                                                (IdExpr 'i)
                                                 (NumExpr 1)))
                                     (NumExpr 2)))))
-        (BeginStmt
-            (list
-                (Decl 'i 'int (Some (NumExpr 1)))
-                (Decl 'sum 'int (Some (NumExpr 0))))
-            (list
-                (WhileStmt (BinOpExpr '<= (IdExpr 'i) (IdExpr 'n))
-                    (AnnoStmt
-                        (list
-                            (Anno 'invariant (BinOpExpr 'eq?
-                                    (IdExpr 'sum)
-                                        (BinOpExpr '/ 
-                                            (BinOpExpr '*
-                                                (IdExpr 'i)
-                                                (BinOpExpr '-
-                                                    (IdExpr 'i)
-                                                    (NumExpr 1)))
-                                        (NumExpr 2)))))
-                            (BeginStmt
-                                '()
-                                (list (AssignStmt 'set+= 'sum (IdExpr 'i))
-                                    (AssignStmt 'set+= 'i (NumExpr 1)))))))))))
+                        (BeginStmt
+                            '()
+                            (list (AssignStmt 'set+= 'sum (IdExpr 'i))
+                                (AssignStmt 'set+= 'i (NumExpr 1))))))))))
+
 (define big-def '(fun (sum [n : int]) -> int
-    ((requires (>= n 0))
-     (ensures (eq? @result (/ (* n (+ n 1)) 2)))
-        (begin
-            (declare 
-                [i : int 1]
-                [sum : int 0])
-            (while (<= i n)
-                ((invariant (eq? sum (/ (* i (- i 1)) 2)))
-                    (begin
-                        (set+= sum i)
-                        (set+= i 1))))))))
+    (requires (>= n 0))
+    (ensures (eq? @result (/ (* n (+ n 1)) 2)))
+    (begin
+        (declare 
+            [i : int 1]
+            [sum : int 0])
+        (while (<= i n)
+            ((invariant (eq? sum (/ (* i (- i 1)) 2)))
+                (begin
+                    (set+= sum i)
+                    (set+= i 1)))))))
 
 (check-equal? (parse-fundef big-def) big-def-ast)

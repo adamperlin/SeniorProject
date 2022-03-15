@@ -3,6 +3,7 @@
 (require "../parser/parser.rkt")
 
 (provide TypeEnv typecheck-expr typecheck-stmt lookup typecheck-function
+    typecheck-program
     check-return-paths)
 
 (define-type TypeEnv (HashTable Symbol Type))
@@ -35,7 +36,7 @@
 
 (define unop-types (hash
     '! '(bool . bool)
-    '- '(int . int)
+    'neg '(int . int)
     '~ '(int . int)))
 
 (: typecheck-binop(BinOpExpr TypeEnv -> Type))
@@ -59,7 +60,7 @@
     (match-let*
         ([(UnOpExpr op ex) expr]
         [texp (typecheck-expr ex type-env)]
-        [(cons arg-t ret-t) (hash-ref binop-types op)])
+        [(cons arg-t ret-t) (hash-ref unop-types op)])
         (unless (equal? texp arg-t)
             (error 'bad-operand-type (format "bad operand type for ~v: ~v" op texp)))
         ret-t))
@@ -73,6 +74,33 @@
     ; we keep a default entry _ret in the type environment to allow for this
     (hash-ref type-env '_ret))
 
+(: typecheck-call (Symbol (Listof Expr) TypeEnv -> Type))
+(define (typecheck-call id args type-env)
+    (match-let*
+        ([type (lookup type-env id)])
+        (unless (FunType? type)
+            (error (format "cannot call non-function ~v" id)))
+        (match-let 
+            ([(FunType want-args ret) type]
+             [arg-types (map (lambda ([e : Expr]) (typecheck-expr e type-env)) args)])
+             (when (not (equal? arg-types want-args))
+                (error 'bad-call (format "argument type mismatch: got ~v, expecting ~v" arg-types want-args)))
+            ret)))
+
+(: typecheck-call-expr (CallExpr TypeEnv -> Type))
+(define (typecheck-call-expr call-expr type-env)
+    (match-let
+        ([(CallExpr id args) call-expr])
+        (typecheck-call id args type-env)))
+
+(: typecheck-call-stmt (CallStmt TypeEnv -> Void))
+(define (typecheck-call-stmt call-stmt type-env)
+    (match-let
+        ([(CallStmt id args) call-stmt])
+        (begin 
+            (typecheck-call id args type-env)
+            (void))))
+
 ; typechecking expressions
 (: typecheck-expr (Expr TypeEnv -> Type))
 (define (typecheck-expr expr type-env)
@@ -83,6 +111,7 @@
         [(BinOpExpr _ _ _) (typecheck-binop expr type-env)]
         [(UnOpExpr _ _) (typecheck-unop expr type-env)]
         [(OldExpr ex) (typecheck-expr ex type-env)]
+        [(CallExpr _ _) (typecheck-call-expr expr type-env)]
         ['@result (typecheck-result-expr type-env)]))
 
 (: bind-opt (All (A B) (-> (A -> (Opt B)) (Opt A) (Opt B))))
@@ -182,15 +211,36 @@
             (error 'bad-annotation 
                 (format "expected annotation ~v to have type bool, got ~v" anno con-t)))))
 
-(: typecheck-function (Fundef -> Void))
-(define (typecheck-function fundef)
-    (define type-env : TypeEnv (hash))
+(: typecheck-function-contract (Contract TypeEnv -> Void))
+(define (typecheck-function-contract anno type-env)
     (match-let*
-        ([(Fundef id args rtype body) fundef]
-        [new-env1 (foldl (lambda ([decl : Decl] [env : TypeEnv]) (add-binding env decl)) type-env args)]
-        [new-env2 (add-binding new-env1 (Decl '_ret rtype (None)))]) 
+        ([(Contract c con) anno]
+        [con-t (typecheck-expr con type-env)])
+        (unless (equal? con-t 'bool)
+            (error 'bad-contract 
+                (format "expected contract ~v to have type bool, got ~v" anno con-t)))))
+
+(: fun-type (Fundef -> FunType))
+(define (fun-type fundef)
+    (match-let
+        ([(Fundef _ args rtype _ _ _) fundef])
+        (FunType (map Decl-typ args) rtype)))
+
+(: typecheck-function (Fundef TypeEnv -> TypeEnv))
+(define (typecheck-function fundef top-env)
+    (match-let*
+        ([(Fundef id args rtype reqs ens body) fundef]
+        [new-env1 (foldl (lambda ([decl : Decl] [env : TypeEnv]) (add-binding env decl)) top-env args)]
+        [new-env2 (add-binding new-env1 (Decl '_ret rtype (None)))]
+        [fun-binding (Decl id (fun-type fundef) (None))]
+        [new-env3 (add-binding new-env2 fun-binding)]) 
+        (for/list: : (Listof Void) ([req reqs])
+            (typecheck-function-contract req new-env2))
+        (for/list: : (Listof Void) ([e ens])
+            (typecheck-function-contract e new-env2))
         (typecheck-stmt body new-env2)
-        (check-return-paths fundef)))
+        (check-return-paths fundef)
+        (add-binding top-env fun-binding)))
 
 (: check-return-path (Stmt -> Boolean))
 (define (check-return-path stmt)
@@ -211,7 +261,7 @@
 (: check-return-paths (Fundef -> Void))
 (define (check-return-paths fundef)
     (match-let*
-        ([(Fundef id args rtype body) fundef])
+        ([(Fundef id args rtype _ _ body) fundef])
         (unless (check-return-path body)
             (error 'incomplete-return-paths (format "incomplete return paths in function ~v" id)))))
 
@@ -246,9 +296,12 @@
         [(DecStmt lval) (typecheck-dec-stmt stmt type-env)]
         [(RetStmt _) (typecheck-ret-stmt stmt type-env)]
         [(BeginStmt decls stmts) (typecheck-begin-stmt stmt type-env)]
-        [(AnnoStmt _ _) (typecheck-anno-stmt stmt type-env)]))
+        [(AnnoStmt _ _) (typecheck-anno-stmt stmt type-env)]
+        [(CallStmt _ _) (typecheck-call-stmt stmt type-env)]))
 
 (: typecheck-program ((Listof Fundef) -> Void))
 (define (typecheck-program defs)
-    (map (lambda ([f : Fundef])
-                    (typecheck-function f)) defs) (void))
+    (define top-type-env (ann (hash) TypeEnv))
+    (define final-env (foldl (lambda ([f : Fundef] [top-env : TypeEnv])
+                    (typecheck-function f top-env)) top-type-env defs))
+    (void))

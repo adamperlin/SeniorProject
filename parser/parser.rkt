@@ -1,34 +1,39 @@
 #lang typed/racket
 
 (provide parse-expr parse-stmt parse-fundef)
-(provide Opt Some None)
+(provide Opt Some Some? Some-v None)
 (provide
- NumExpr IdExpr ResultExpr BoolExpr BinOpExpr UnOpExpr BoolExpr
- OldExpr IncStmt DecStmt RetStmt WhileStmt IfStmt AssignStmt BeginStmt
- AnnoStmt Expr Type Stmt)
-(provide BinOpExpr-left BinOpExpr-right BinOpExpr-op)
-(provide Fundef)
+ NumExpr IdExpr ResultExpr BoolExpr BinOpExpr UnOpExpr BoolExpr BoolExpr?
+ OldExpr IncStmt DecStmt RetStmt WhileStmt IfStmt IfStmt? AssignStmt AssignStmt? BeginStmt
+ AnnoStmt Expr Expr? Type FunType FunType? Stmt Stmt? LVal LVal? RetStmt? WhileStmt? IncStmt? DecStmt? BeginStmt?
+ CallExpr CallExpr? CallStmt CallStmt? Contract Contract?)
 
-(provide Decl Anno)
+(provide BinOpExpr-left BinOpExpr-right BinOpExpr-op BinOp? UnOp UnOp?)
+(provide Fundef Fundef? Fundef-id)
+
+(provide Decl Decl-name Decl-typ Anno)
 (require racket/set)
 
 (struct (a) Some ([v : a]) #:transparent)
 (struct None () #:transparent)
 (define-type (Opt a) (U (Some a) None))
 
-(define-type UnOp (U '! '~ '-))
+(define-type UnOp (U '! '~ 'neg))
 (define-predicate UnOp? UnOp)
 
 (define-type BinOp (U '+ '- '* '/ '% '<< '>>
     '< '> '>= '<= 'eq? 'ne? 'band 'xor 'bor 'and 'or))
 (define-predicate BinOp? BinOp)
 (define-type AsnOp (U
-                    'set= 'set+= 'set-= 'set
-                    'set*= 'set-= 'set>>= 'set<<= 'set^= 'set&= 'set-bor= ))
+                    'set= 'set+= 'set-= 'set/=
+                    'set*= 'set>>= 'set<<= 'set^= 'set&= 'set-bor= ))
 (define-predicate AsnOp? AsnOp)
 
-(define-type Validation (U 'requires 'ensures 'invariant 'assert) )
+(define-type Validation (U 'invariant 'assert) )
 (define-predicate Validation? Validation)
+
+(define-type ContractKind (U 'requires 'ensures))
+(define-predicate ContractKind? ContractKind)
 
 (: keywords (Setof Symbol))
 (define keywords (set 'if 'else 'while 'return '@old '@result))
@@ -37,7 +42,8 @@
 (define-type BoolType 'bool)
 (define-type IntType 'int)
 (define-type VoidType 'void)
-(define-type Type (U BoolType IntType VoidType))
+(struct FunType ([arg-types : (Listof Type)] [ret-type : Type]) #:transparent)
+(define-type Type (U BoolType IntType VoidType FunType))
 (define-predicate Type? Type)
 
 
@@ -47,40 +53,47 @@
 (struct NumExpr ([val : Integer]) #:transparent)
 (struct UnOpExpr ([op : UnOp] [expr : Expr]) #:transparent)
 (struct BinOpExpr ([op : BinOp] [left : Expr] [right : Expr]) #:transparent)
+(struct CallExpr ([name : Vid] [args : (Listof Expr)]) #:transparent)
 (define-type BoolExpr (U 'true 'false))
 (define-predicate BoolExpr? BoolExpr)
 
-(define-type Expr (U IdExpr NumExpr UnOpExpr BoolExpr BinOpExpr OldExpr ResultExpr))
+(define-type Expr (U IdExpr NumExpr UnOpExpr BoolExpr BinOpExpr OldExpr ResultExpr CallExpr))
+(define-predicate Expr? Expr)
 (struct OldExpr ([exp : Expr]) #:transparent)
 (define-type ResultExpr '@result)
 (define-predicate ResultExpr? ResultExpr)
 
 (struct Anno ([kind : Validation] [expr : Expr]) #:transparent)
+(struct Contract ([kind : ContractKind] [expr : Expr]) #:transparent)
 (struct Decl ([name : Vid] [typ : Type] [val : (Opt Expr)]) #:transparent)
 (define-type DeclBlock (Listof Decl))
 (define-predicate DeclBlock? DeclBlock)
 
-(struct AssignStmt ([op : AsnOp] [target : LVal][src : Expr]) #:transparent)
+(struct AssignStmt ([op : AsnOp] [target : LVal] [src : Expr]) #:transparent)
 (struct IfStmt ([guard : Expr] [then : Stmt] [other : (Opt Stmt)]) #:transparent)
 (struct WhileStmt ([guard : Expr] [body : Stmt]) #:transparent)
 (struct RetStmt ([exp : (Opt Expr)]) #:transparent)
+(struct CallStmt ([name : Vid] [args : (Listof Expr)]) #:transparent)
 (struct BeginStmt ([decls : DeclBlock] [stmts : (Listof Stmt)]) #:transparent)
 (struct AssertStmt ([exp : Expr]) #:transparent)
 (struct IncStmt ([lv : LVal]) #:transparent)
 (struct DecStmt ([lv : LVal]) #:transparent)
-(struct Fundef ([id : Symbol] [args : (Listof Decl)] [rtype : Type] [body : Stmt])
-    #:transparent)
+(struct Fundef ([id : Symbol] [args : (Listof Decl)] [rtype : Type] [requires : (Listof Contract)] 
+                [ensures : (Listof Contract)] [body : Stmt]) #:transparent)
 
 (define (valid-id? [s : Sexp])
-  (and (symbol? s) (and (not (or (BoolExpr? s) (BinOp? s) (UnOp? s) (Type? s) (AsnOp? s) (Validation? s))
-            ) (not (set-member? keywords s)))))
+  (and (symbol? s) (and (not (or (BoolExpr? s) (BinOp? s) (UnOp? s) (Type? s) (AsnOp? s) 
+                        (Validation? s) (ContractKind? s))) 
+                        (not (set-member? keywords s)))))
 
 (define-type LVal Vid)
+(define-predicate LVal? LVal)
 
 (define-type SimpleStmt (U AssignStmt IncStmt DecStmt))
 (struct AnnoStmt ([anno : (Listof Anno)] [stmt : Stmt]) #:transparent)
 (define-type Stmt (U SimpleStmt IfStmt WhileStmt BeginStmt
-                     BeginStmt AssertStmt AnnoStmt RetStmt))
+                     BeginStmt AssertStmt AnnoStmt CallStmt RetStmt))
+(define-predicate Stmt? Stmt)
 
 (: parse-expr (Sexp -> Expr))
 (define (parse-expr sexp)
@@ -92,6 +105,7 @@
     [(? valid-id? (? symbol? id)) (IdExpr id)]
     [(? ResultExpr? r) r]
     [(list 'old e) (OldExpr (parse-expr e))]
+    [(list (? valid-id? id) args ...) (CallExpr id (map parse-expr args))]
     [other (error 'bad-expr (format "~e" other))]))
 
 (: parse-decl (Sexp -> Decl))
@@ -104,6 +118,10 @@
 (: parse-validation (Validation Sexp -> Anno))
 (define (parse-validation v s)
     (Anno v (parse-expr s)))
+
+(: parse-contract (ContractKind Sexp -> Contract))
+(define (parse-contract c s)
+    (Contract c (parse-expr s)))
 
 (: parse-anno-stmt ((Listof Validation) (Listof Sexp) Sexp -> AnnoStmt))
 (define (parse-anno-stmt vs exps stmt)
@@ -128,9 +146,10 @@
                                            (map parse-stmt stmts))]
     [(list 'inc (? valid-id? lv)) (IncStmt lv)]
     [(list 'dec (? valid-id? lv)) (DecStmt lv)]
-    [(list (list (? Validation? v) e) ... s) (parse-anno-stmt 
+    [(list (list (? Validation? v) e) ... s)    (parse-anno-stmt 
                                                 (cast v (Listof Validation))
                                                 (cast e (Listof Sexp)) s)]
+    [(list (? valid-id? id) args ...) (CallStmt id (map parse-expr args))]
     [other (error 'bad-stmt (format "~e" sexp))]))
 
 (: parse-args (Sexp -> (Listof Decl)))
@@ -141,11 +160,37 @@
                     (Decl v t (None))) (cast v (Listof Vid)) (cast t (Listof Type)))]
         [other (error 'bad-arg-syntax (format "~e" s))]))
 
+
+(: collect-contracts (-> (Listof Contract) (Pairof (Listof Contract) (Listof Contract))))
+(define (collect-contracts contracts)
+    (match contracts
+        ['() (cons '() '())]
+        [(cons (Contract v e) rst)
+            (match-let
+                ([(cons ens reqs) (collect-contracts rst)])
+                (if (equal? v 'ensures)
+                    (cons (cons (Contract v e) ens) reqs)
+                    (cons ens (cons (Contract v e) reqs))))]))
+
+
+(: parse-contracts (-> (Listof ContractKind) (Listof Sexp) (Pairof (Listof Contract) (Listof Contract))))
+(define (parse-contracts kinds exprs)
+    (match-let* 
+        ([annos (map parse-contract kinds exprs)])
+            (collect-contracts annos)))
+        
+
 (: parse-fundef (Sexp -> Fundef))
 (define (parse-fundef s)
     (match s
-        [(list 'fun (list (? valid-id? id) args ...) '-> (? Type? rtype) body)
-            (Fundef id (parse-args args) rtype (parse-stmt body))]
-        [(list 'fun (list (? valid-id? id) args ...) body)
-            (Fundef id (parse-args args) 'void (parse-stmt body))]
+        [(list 'fun (list (? valid-id? id) args ...) '-> (? Type? rtype) 
+            (list (? ContractKind? v) e) ... body)
+                (match-let* 
+                     ([(cons ensures requires) (parse-contracts (cast v (Listof ContractKind)) (cast e (Listof Sexp)))])
+                    (Fundef id (parse-args args) rtype requires ensures (parse-stmt body)))]
+        [(list 'fun (list (? valid-id? id) args ...) 
+            (list (? ContractKind? v) e) ... body)
+            (match-let* 
+                    ([(cons ensures requires) (parse-contracts (cast v (Listof ContractKind)) (cast e (Listof Sexp)))])
+                    (Fundef id (parse-args args) 'void requires ensures (parse-stmt body)))]
         [other (error 'bad-fundef (format "~e" s))]))
