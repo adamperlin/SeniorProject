@@ -84,6 +84,9 @@
 (require (for-syntax syntax/parse racket/base racket/struct))
 
 ; prepends the string str onto a racket identifier
+; based heavily on
+; https://www.it.uu.se/edu/course/homepage/avfunpro/ht13/lectures/Racket-3-Macros.pdf, 
+; "Breaking Hygiene"
 (begin-for-syntax
     (define (id-prepend str id)
         (datum->syntax id (string->symbol
