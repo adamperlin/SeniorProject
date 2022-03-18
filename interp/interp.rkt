@@ -6,16 +6,22 @@
 
 
 (provide interp-expr IntValue BoolValue VoidValue Value Frame new-frame interp-stmt interp-prog top-interp)
+
+; values which can be produced through iterpretation
 (struct Value () #:transparent)
 (struct IntValue Value [val] #:transparent)
 (struct BoolValue Value [val] #:transparent)
 (struct VoidValue Value () #:transparent)
 
+; represents an instance of a stack frame for a single function
+; note that because nested scopes can be defined dynamically, the
+; frame has its own internal stack, locals-stack, for pushing and popping the internal scopes
 (struct/contract Frame ([params hash?] [old-params hash?] [locals-stack list?] [top-env hash?] [return (or/c Value? void?)]) #:transparent #:mutable)
 (define/contract (new-frame)
   (-> Frame?)
   (Frame (make-hash) (make-hash) (cons (make-hash) '()) (make-hash) (Value)))
 
+; sets the value of a local variable in the current scope
 (define/contract (set-local frame name value)
   (-> Frame? symbol? Value? void?)
   (match-let*
@@ -23,9 +29,11 @@
        [cur-locals (car locals-stack)])
     
     (cond
+    ;update the existing box that represents the variable if the slot already exists
       [(hash-has-key? cur-locals name) (let
                                        ([slot (hash-ref cur-locals name)])
                                      (set-box! slot value))]
+    ; otherwise create a new box for the binding
       [else (hash-set! cur-locals name (box value))])))
 
 (define/contract (get-local frame name)
@@ -37,21 +45,29 @@
       (error 'interp (format "unknown local ~v" name)))
     (unbox (hash-ref cur-locals name))))
 
+; unbox, apply function to internal value, and re-box local binding
 (define/contract (modify-local frame name func)
     (-> Frame? symbol? (-> any/c any/c) void?)
     (set-local frame name (func (get-local frame name))))
 
+; creates a new scope by pushing a new hashmap onto the local scopes stack
 (define (new-scope frame locals)
   (match-let*
       ([(Frame params _ locals-stack _ ret) frame]
+    ; we copy the bindings that are in the top entry of the local stack into our nested scope,
+    ; so that the nested scope will have access to those boxes and be able to mutate them.
        [next-scope (hash-copy (car locals-stack))])
     (set-Frame-locals-stack! frame (cons next-scope locals-stack))
     (foldl (lambda (decl frame)
         (match-let*
              ([(Decl name typ maybe-expr) decl]
+             ; evaluate the associated expression in each new binding
              [val (match maybe-expr 
                     [(Some e) (interp-expr e frame)]
                     [(None) (zero-val-for typ)])])
+            ; if name already exists (because binding has been copied from parent scope)
+            ; remove it; this allows for shadowing of variables in parent scope
+            ; within the nested scope
             (when (hash-has-key? next-scope name)
                 (hash-remove! next-scope name))
             (set-local frame name val) frame)) frame locals)) (void))
@@ -61,16 +77,13 @@
         ([(Frame params _ locals-stack _ ret) frame])
         (set-Frame-locals-stack! frame (cdr locals-stack))))
 
-(define f (new-frame))
-(set-local f 'a (IntValue 5))
-
 (define/contract (as-bool b)
   (-> BoolExpr? boolean?)
   (equal? b 'true))
 
 (require (for-syntax syntax/parse racket/base racket/struct))
 
-
+; prepends the string str onto a racket identifier
 (begin-for-syntax
     (define (id-prepend str id)
         (datum->syntax id (string->symbol
@@ -78,6 +91,7 @@
                                             (symbol->string
                                             (syntax->datum id)))))))
 
+; appends the string str onto the end of a racket identifier
 (begin-for-syntax
     (define (id-append id str)
         (datum->syntax id (string->symbol
@@ -85,6 +99,13 @@
                                             (symbol->string
                                             (syntax->datum id)) str)))))
 
+#|
+   The following are macros for generating primitive operators
+   For instance, (prim + IntValue IntValue IntValue +) defines the function 'prim+' 
+   that has a contract which accepts only IntValues and returns an IntValue.
+   It will unwrap the intv alues, and invoke the function '+' (last argument)
+   on the unwrapped internal value
+|#
 (define-syntax (prim stx)
   (syntax-parse stx
     [(_ op t1 t2 ret func)
@@ -97,6 +118,7 @@
                 (match (cons x y)
                 [(cons (t1 v1) (t2 v2)) (ret (func v1 v2))]
                 [other (error 'err (format "bad types for ~v: ~v ~v" id x y))])))]
+    ; unary operation variant
     [(_ op argt ret func)
         (with-syntax ([id (id-prepend "prim" #'op)]
                       [arg-guard (id-append #'argt "?")]
@@ -122,6 +144,7 @@
     (-> integer? integer? integer?)
     (arithmetic-shift n (- m)))
 
+; primitive definitions using the macros...
 (prim + IntValue IntValue IntValue +)
 (prim - IntValue IntValue IntValue -)
 (prim * IntValue IntValue IntValue *)
@@ -150,6 +173,10 @@
 
 
 
+; there is probably a more rackety way to do this, but 
+; essentially this is a macro which generates a map of a function
+; over each of a struct's fields, before wrapping the fields back
+; in the struct. It is a lot like a simple fmap on a product type in haskell
 (define-syntax (fmap-struct stx)
   (syntax-parse stx
     [(_ strct strct-val fn) #'(apply strct (map fn (struct->list strct-val)))]))    
@@ -186,9 +213,6 @@
                        'or primor))
 
 
-;(define binop-bool-funcs)
-
-
 
 (define/contract (interp-binop op lft-val rht-val)
   (-> BinOp? Value? Value? Value?)
@@ -203,11 +227,18 @@
         ((hash-ref prim-funcs op) val))
 
 
+; zip list of args (expressions) and list of declarations 
+; into declarations annotated with the expressions
+; declarations have an optional expression, hence the 'Some'
 (define (zip-decls args decls)
     (map 
         (lambda (expr decl) (Decl (Decl-name decl) (Decl-typ decl) (Some expr)))
                             args decls))
 
+; we store copies of function arguments
+; on entry to the function in order to 
+; support the (old e) syntax, where e is an expression evaluated with respect to
+; the parameters of the function when it was entered.
 (define (store-old frame fargs)
     (match-let* 
         ([(Frame _ old-params _ _ _) frame])
@@ -232,11 +263,14 @@
         (begin 
             (new-scope frame arg-decls)
             (store-old frame fargs)
+            ; evalaute 'requires' preconditions
             (for/list ([req reqs])
                 (eval-contract req frame))
             (interp-stmt body frame)
+            ; evalaute 'ensures' post conditions
             (for/list ([en ens])
                 (eval-contract en frame))
+            ; return value for a function is stored in the 'return' slot of the frame
             (Frame-return frame))))
 
 (define/contract (interp-call-expr expr frame)
@@ -306,6 +340,9 @@
     (match-let* 
         ([(AssignStmt op target src) assign-stmt]
          [src-val (interp-expr src frame)])
+         ; we can implement our assignments by using the macro generated primitives,
+         ; and the simply using modify-local to unbox the value of a binding, apply a function,
+         ; and then re-box it
          (modify-local frame target (curryr (hash-ref assign-funcs op) src-val))))
 
 (define/contract (interp-if if-stmt frame)
@@ -321,6 +358,9 @@
                     [None 'continue])])))
 
 
+; returns involve simply setting the return slot in the interpreter stack frame, 
+; and returning a 'return symbol, which indicates to the caller to propagate 
+; the return signal upwards
 (define/contract (interp-ret ret-stmt frame)
     (-> RetStmt? Frame? symbol?)
     (match ret-stmt
@@ -332,6 +372,10 @@
             (set-Frame-return! frame (void))
             'return)]))
 
+; while's are fairly self-explanatory, but they need
+; to handle a possible 'return signal from the child statement
+; note that 'continue here means continue, don't return. It doesn't correspond to 
+; any kind of "continue" statement
 (define/contract (interp-while while-stmt frame)
     (-> WhileStmt? Frame? symbol?)
     (match-let*
@@ -349,7 +393,8 @@
         ['int (IntValue 0)]
         ['bool (BoolValue #f)]))
 
-
+; we deal with early returns as a base case when we're interpreting a sequence of statements...
+; at each step we either recurse and continue, or propagate the 'return upwards
 (define (interp-sequence stmts frame) 
     (match stmts
         ['() 'continue]
@@ -359,6 +404,8 @@
                                 'return
                                 (interp-sequence rst frame)))]))
 
+; begin statements involve the introduction of a new scope, so we may be adding
+; to the locals stack here in addition to interpreting a sequence of statements
 (define/contract (interp-begin begin-stmt frame)
     (-> BeginStmt? Frame? symbol?)
     (match-let*
@@ -378,10 +425,16 @@
 (define/contract (interp-stmt stmt frame)
     (-> Stmt? Frame? symbol?)
     (match stmt
+        ; this will most definitely cause a 'return signal
         [(RetStmt _) (interp-ret stmt frame)]
+
+        ; these simple statements could not cause a return, 
+        ; so we return 'continue
         [(IncStmt lv) (interp-inc stmt frame) 'continue]
         [(DecStmt lv) (interp-dec stmt frame) 'continue]
         [(AssignStmt op target src) (interp-assign stmt frame) 'continue]
+
+        ; these statements could propagate a 'return upwards, so we let them decide
         [(IfStmt _ _ _ ) (interp-if stmt frame)]
         [(WhileStmt _ _) (interp-while stmt frame)]
         [(BeginStmt _ _) (interp-begin stmt frame)]
@@ -395,6 +448,8 @@
         (unless (BoolValue-val pass)
             (error vtype (format "validation failed; frame state ~v" (car (Frame-locals-stack frame)))))))
 
+; interpreting an annotated statement simply involves checking the assertions 
+; for truthiness and crashing if they fail, before executing the associated statement
 (define (interp-anno-stmt anno-stmt frame)
     (match-let*
         ([(AnnoStmt anns stmt) anno-stmt])
