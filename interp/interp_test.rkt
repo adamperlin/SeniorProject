@@ -5,93 +5,97 @@
 (require "../typecheck/typecheck.rkt")
 (require rackunit)
 
-(check-equal? (interp-expr (NumExpr 1) (new-frame)) (IntValue 1))
-(check-equal? (interp-expr (NumExpr -1000) (new-frame)) (IntValue -1000))
+(define make-int-value
+    (compose IntValue int32))
 
-(define test-frame (Frame (make-hash) (make-hash) (list (hash 'a (box (IntValue 3)) 'b (box (BoolValue #t)))) (make-hash) (IntValue 0)))
+(check-equal? (interp-expr (NumExpr 1) (new-frame)) (make-int-value 1))
+(check-equal? (interp-expr (NumExpr -1000) (new-frame)) (make-int-value -1000))
+
+(define test-frame (Frame (make-hash) (make-hash) (list (hash 'a (box (make-int-value 3)) 'b (box (BoolValue #t)))) (make-hash) (make-int-value 0)))
+
 
 
 ; simple expression tests
 
-(check-equal? (interp-expr (IdExpr 'a) test-frame) (IntValue 3))
+(check-equal? (interp-expr (IdExpr 'a) test-frame) (make-int-value 3))
 (check-equal? (interp-expr (IdExpr 'b) test-frame) (BoolValue #t))
-(check-equal? (interp-expr (BinOpExpr '+ (IdExpr 'a) (NumExpr 1)) test-frame) (IntValue 4))
-(check-equal? (interp-expr (BinOpExpr '<< (IdExpr 'a) (NumExpr 1)) test-frame) (IntValue 6))
-(check-equal? (interp-expr (BinOpExpr '>> (IdExpr 'a) (NumExpr 1)) test-frame) (IntValue 1))
+(check-equal? (interp-expr (BinOpExpr '+ (IdExpr 'a) (NumExpr 1)) test-frame) (make-int-value 4))
+(check-equal? (interp-expr (BinOpExpr '<< (IdExpr 'a) (NumExpr 1)) test-frame) (make-int-value 6))
+(check-equal? (interp-expr (BinOpExpr '>> (IdExpr 'a) (NumExpr 1)) test-frame) (make-int-value 1))
 (check-equal? (interp-expr (BinOpExpr 'eq? (IdExpr 'a) (NumExpr 3)) test-frame) (BoolValue #t))
-(check-equal? (interp-expr (UnOpExpr '~ (NumExpr 1024)) test-frame) (IntValue -1025))
-(check-equal? (interp-expr (BinOpExpr 'xor (NumExpr 8) (NumExpr 2)) test-frame) (IntValue 10))
-(check-equal? (interp-expr (BinOpExpr '* (IdExpr 'a) (NumExpr 10)) test-frame) (IntValue 30))
-(check-equal? (interp-expr (BinOpExpr '/ (NumExpr 30) (NumExpr 10)) test-frame) (IntValue 3))
-(check-equal? (interp-expr (BinOpExpr 'band (NumExpr 1) (NumExpr 0)) test-frame) (IntValue 0))
-(check-equal? (interp-expr (BinOpExpr 'bor (NumExpr 8) (NumExpr 1)) test-frame) (IntValue 9))
+(check-equal? (interp-expr (UnOpExpr '~ (NumExpr 1024)) test-frame) (make-int-value -1025))
+(check-equal? (interp-expr (BinOpExpr 'xor (NumExpr 8) (NumExpr 2)) test-frame) (make-int-value 10))
+(check-equal? (interp-expr (BinOpExpr '* (IdExpr 'a) (NumExpr 10)) test-frame) (make-int-value 30))
+(check-equal? (interp-expr (BinOpExpr '/ (NumExpr 30) (NumExpr 10)) test-frame) (make-int-value 3))
+(check-equal? (interp-expr (BinOpExpr 'band (NumExpr 1) (NumExpr 0)) test-frame) (make-int-value 0))
+(check-equal? (interp-expr (BinOpExpr 'bor (NumExpr 8) (NumExpr 1)) test-frame) (make-int-value 9))
 (check-equal? (interp-expr (BinOpExpr 'and 'true 'true) test-frame) (BoolValue #t))
 (check-equal? (interp-expr (BinOpExpr 'or 'true 'false) test-frame) (BoolValue #t))
 (check-equal? (interp-expr (UnOpExpr '! 'true) test-frame) (BoolValue #f))
-(check-equal? (interp-expr (UnOpExpr 'neg (NumExpr 10)) test-frame) (IntValue -10))
+(check-equal? (interp-expr (UnOpExpr 'neg (NumExpr 10)) test-frame) (make-int-value -10))
 
 ; inc/dec tests
-(define test-frame1 (Frame (make-hash) (make-hash) (list (hash 'a (box (IntValue 3)) 'b (box (BoolValue #t)))) (make-hash) (IntValue 0)))
+(define test-frame1 (Frame (make-hash) (make-hash) (list (hash 'a (box (make-int-value 3)) 'b (box (BoolValue #t)))) (make-hash) (make-int-value 0)))
 (check-equal? (interp-stmt (IncStmt 'a) test-frame1) 'continue)
-(check-equal? (Frame (make-hash) (make-hash) (list (hash 'a (box (IntValue 4)) 'b (box (BoolValue #t)))) (make-hash) (IntValue 0)) test-frame1)
+(check-equal? (Frame (make-hash) (make-hash) (list (hash 'a (box (make-int-value 4)) 'b (box (BoolValue #t)))) (make-hash) (make-int-value 0)) test-frame1)
 (check-equal? (interp-stmt (DecStmt 'a) test-frame1) 'continue)
-(check-equal? (Frame (make-hash) (make-hash) (list (hash 'a (box (IntValue 3)) 'b (box (BoolValue #t)))) (make-hash) (IntValue 0)) test-frame1)
+(check-equal? (Frame (make-hash) (make-hash) (list (hash 'a (box (make-int-value 3)) 'b (box (BoolValue #t)))) (make-hash) (make-int-value 0)) test-frame1)
 
 ; assignment tests
 (define test-frame2 (Frame (make-hash) (make-hash)
     (list 
-        (hash 'a (box (IntValue 3)) 
+        (hash 'a (box (make-int-value 3)) 
               'b (box (BoolValue #t))))
     (make-hash) 
-    (IntValue 0)))
+    (make-int-value 0)))
 
 (check-equal? (interp-stmt (AssignStmt 'set+= 'a (NumExpr 10)) test-frame2) 'continue)
-(check-equal? (Frame (make-hash) (make-hash) (list (hash 'a (box (IntValue 13)) 'b (box (BoolValue #t)))) (make-hash) (IntValue 0)) test-frame2)
+(check-equal? (Frame (make-hash) (make-hash) (list (hash 'a (box (make-int-value 13)) 'b (box (BoolValue #t)))) (make-hash) (make-int-value 0)) test-frame2)
 
 (check-equal? (interp-stmt (AssignStmt 'set<<= 'a (NumExpr 3)) test-frame2) 'continue)
-(check-equal? (Frame (make-hash) (make-hash) (list (hash 'a (box (IntValue 104)) 'b (box (BoolValue #t)))) (make-hash) (IntValue 0)) test-frame2)
+(check-equal? (Frame (make-hash) (make-hash) (list (hash 'a (box (make-int-value 104)) 'b (box (BoolValue #t)))) (make-hash) (make-int-value 0)) test-frame2)
 
 (check-equal? (interp-stmt (AssignStmt 'set>>= 'a (NumExpr 1)) test-frame2) 'continue)
-(check-equal? (Frame (make-hash) (make-hash) (list (hash 'a (box (IntValue 52)) 'b (box (BoolValue #t)))) (make-hash) (IntValue 0)) test-frame2)
+(check-equal? (Frame (make-hash) (make-hash) (list (hash 'a (box (make-int-value 52)) 'b (box (BoolValue #t)))) (make-hash) (make-int-value 0)) test-frame2)
 
 (check-equal? (interp-stmt (AssignStmt 'set= 'b 'false) test-frame2) 'continue)
-(check-equal? (Frame (make-hash) (make-hash) (list (hash 'a (box (IntValue 52)) 'b (box (BoolValue #f)))) (make-hash) (IntValue 0)) test-frame2)
+(check-equal? (Frame (make-hash) (make-hash) (list (hash 'a (box (make-int-value 52)) 'b (box (BoolValue #f)))) (make-hash) (make-int-value 0)) test-frame2)
 
 
 (check-equal? (interp-stmt (IfStmt (BinOpExpr '>= (IdExpr 'a) (NumExpr 0)) 
                             (AssignStmt 'set= 'a (NumExpr -2))
                             (Some (AssignStmt 'set= 'a (NumExpr -3)))) test-frame2) 'continue)
-(check-equal? (Frame (make-hash) (make-hash) (list (hash 'a (box (IntValue -2)) 'b (box (BoolValue #f)))) (make-hash) (IntValue 0)) test-frame2)
+(check-equal? (Frame (make-hash) (make-hash) (list (hash 'a (box (make-int-value -2)) 'b (box (BoolValue #f)))) (make-hash) (make-int-value 0)) test-frame2)
 
 (check-equal? (interp-stmt (IfStmt (IdExpr 'b)
                             (AssignStmt 'set= 'a (NumExpr -2))
                             (Some (AssignStmt 'set= 'a (NumExpr -3)))) test-frame2) 'continue)
-(check-equal? (Frame (make-hash) (make-hash) (list (hash 'a (box (IntValue -3)) 'b (box (BoolValue #f)))) (make-hash) (IntValue 0)) test-frame2)
+(check-equal? (Frame (make-hash) (make-hash) (list (hash 'a (box (make-int-value -3)) 'b (box (BoolValue #f)))) (make-hash) (make-int-value 0)) test-frame2)
 
 ; ret
 (check-equal? (interp-stmt (RetStmt (Some (NumExpr -234))) test-frame2) 'return)
-(check-equal? (Frame (make-hash) (make-hash) (list (hash 'a (box (IntValue -3)) 'b (box (BoolValue #f)))) (make-hash) (IntValue -234)) test-frame2)
+(check-equal? (Frame (make-hash) (make-hash) (list (hash 'a (box (make-int-value -3)) 'b (box (BoolValue #f)))) (make-hash) (make-int-value -234)) test-frame2)
 
 
 (define test-frame3 (Frame (make-hash) (make-hash) 
     (list 
-        (hash 'i (box (IntValue 0)) 
-              'sum (box (IntValue 0))))
+        (hash 'i (box (make-int-value 0)) 
+              'sum (box (make-int-value 0))))
     (make-hash) 
-    (IntValue 0)))
+    (make-int-value 0)))
 
 (check-equal? (interp-stmt 
                     (WhileStmt (BinOpExpr '< (IdExpr 'i) (NumExpr '10)) 
                         (IncStmt 'i)) test-frame3) 'continue)
 
-(check-equal? (Frame (make-hash) (make-hash) (list (hash 'i (box (IntValue 10)) 'sum (box (IntValue 0)))) (make-hash) (IntValue 0)) test-frame3)
+(check-equal? (Frame (make-hash) (make-hash) (list (hash 'i (box (make-int-value 10)) 'sum (box (make-int-value 0)))) (make-hash) (make-int-value 0)) test-frame3)
 
 (define test-frame4 (Frame (make-hash) (make-hash) 
     (list 
-        (hash 'i (box (IntValue 0)) 
-              'sum (box (IntValue 0))))
+        (hash 'i (box (make-int-value 0)) 
+              'sum (box (make-int-value 0))))
     (make-hash) 
-    (IntValue 0)))
+    (make-int-value 0)))
 (check-equal? (interp-stmt 
                     (WhileStmt (BinOpExpr '< (IdExpr 'i) (NumExpr '10)) 
                         (IfStmt (BinOpExpr 'eq? (IdExpr 'i) (NumExpr 5))
@@ -100,36 +104,37 @@
 
 (check-equal? test-frame4 (Frame (make-hash) (make-hash) 
                         (list 
-                            (hash 'i (box (IntValue 5)) 
-                                'sum (box (IntValue 0))))
+                            (hash 'i (box (make-int-value 5)) 
+                                'sum (box (make-int-value 0))))
                         (make-hash) 
-                        (IntValue 5)))
+                        (make-int-value 5)))
 
 (define test-frame5 (Frame (make-hash) (make-hash) 
     (list 
-        (hash 'i (box (IntValue 0)) 
-              'sum (box (IntValue 0))))
+        (hash 'i (box (make-int-value 0)) 
+              'sum (box (make-int-value 0))))
     (make-hash) 
-    (IntValue 0)))
+    (make-int-value 0)))
 
 (check-equal? (interp-stmt (BeginStmt (list (Decl 'i 'int (None)) (Decl 'b 'bool (Some 'false)))
     (list (AssignStmt 'set+= 'i (NumExpr 1)) (AssignStmt 'set= 'b 'true))) test-frame5) 'continue)
+
 (check-equal? test-frame5 (Frame (make-hash) (make-hash)
     (list 
-        (hash 'i (box (IntValue 0)) 
-              'sum (box (IntValue 0))))
+        (hash 'i (box (make-int-value 0)) 
+              'sum (box (make-int-value 0))))
     (make-hash)
-    (IntValue 0)))
+    (make-int-value 0)))
 
 (check-equal? (interp-stmt (BeginStmt (list (Decl 'x 'int (Some (NumExpr 2))) (Decl 'b 'bool (Some 'true)))
     (list (IfStmt (IdExpr 'b) (AssignStmt 'set+= 'i (IdExpr 'x)) (None)))) test-frame5) 'continue)
 
 (check-equal? test-frame5 (Frame (make-hash) (make-hash) 
     (list 
-        (hash 'i (box (IntValue 2)) 
-              'sum (box (IntValue 0))))
+        (hash 'i (box (make-int-value 2)) 
+              'sum (box (make-int-value 0))))
         (make-hash) 
-    (IntValue 0)))
+    (make-int-value 0)))
 
 (define test-frame6 (new-frame))
 (check-equal? (interp-stmt (parse-stmt '(begin 
@@ -141,7 +146,7 @@
     (set= i (+ i 1))
     (return i))) test-frame6) 'return)
 
-(check-equal? test-frame6 (Frame (make-hash) (make-hash)  (list (make-hash)) (make-hash) (IntValue 21)))
+(check-equal? test-frame6 (Frame (make-hash) (make-hash)  (list (make-hash)) (make-hash) (make-int-value 21)))
 
 (define big-def-ast (Fundef 'sum (list (Decl 'n 'int (None))) 'int
     (list 
@@ -249,7 +254,6 @@
                 (set= b r)
                 (set= r (% a b))))
         (return b)))))
-(check-equal? (typecheck-function gcd) (void))
 
 ; function calls
 (define test-env (make-hash (list 
@@ -265,17 +269,17 @@
     (cons  'has-contract has-contract)
     (cons  'breaks-ensures breaks-ensures))))
 
-(define test-frame7 (Frame (make-hash) (make-hash) (list (make-hash)) test-env (IntValue 0)))
-(check-equal? (interp-expr (CallExpr 'max (list (NumExpr 3) (NumExpr 4))) test-frame7) (IntValue 4))
-(check-equal? (interp-expr (CallExpr 'no-args '()) test-frame7) (IntValue 30))
-(check-equal? (interp-expr (CallExpr 'fact (list (NumExpr 10))) test-frame7) (IntValue 3628800))
-(check-equal? (interp-expr (CallExpr 'h (list (NumExpr 3))) test-frame7) (IntValue 60))
-(check-equal? (interp-expr (CallExpr 'gcd (list (NumExpr 35) (NumExpr 14))) test-frame7) (IntValue 7))
+(define test-frame7 (Frame (make-hash) (make-hash) (list (make-hash)) test-env (make-int-value 0)))
+(check-equal? (interp-expr (CallExpr 'max (list (NumExpr 3) (NumExpr 4))) test-frame7) (make-int-value 4))
+(check-equal? (interp-expr (CallExpr 'no-args '()) test-frame7) (make-int-value 30))
+(check-equal? (interp-expr (CallExpr 'fact (list (NumExpr 10))) test-frame7) (make-int-value 3628800))
+(check-equal? (interp-expr (CallExpr 'h (list (NumExpr 3))) test-frame7) (make-int-value 60))
+(check-equal? (interp-expr (CallExpr 'gcd (list (NumExpr 35) (NumExpr 14))) test-frame7) (make-int-value 7))
 
 
 
 ; basic contract testing
-(check-equal? (interp-expr (CallExpr 'has-contract (list (NumExpr 1))) test-frame7) (IntValue 2))
+(check-equal? (interp-expr (CallExpr 'has-contract (list (NumExpr 1))) test-frame7) (make-int-value 2))
 (check-exn (regexp (regexp-quote "requires: contract check failed"))
     (lambda ()
         (interp-expr (CallExpr 'has-contract (list (NumExpr 0))) test-frame7)))
@@ -284,13 +288,13 @@
     (lambda ()
         (interp-expr (CallExpr 'breaks-ensures (list (NumExpr 1))) test-frame7)))
 
-(check-equal? (interp-expr (CallExpr 'sum (list (NumExpr 12))) test-frame7) (IntValue 78))
+(check-equal? (interp-expr (CallExpr 'sum (list (NumExpr 12))) test-frame7) (make-int-value 78))
 
 (define prog (list
     simple-fun
     (parse-fundef '(fun (main) 
         (return (max 5 6))))))
-(check-equal? (interp-prog prog) (IntValue 6))
+(check-equal? (interp-prog prog) (make-int-value 6))
 
 (define prog1 '(
     (fun (gcd [a : int] [b : int]) -> int
@@ -358,17 +362,24 @@
 
 (define test-frame8 (Frame (make-hash) 
     (make-hash
-        (list (cons 'x (box (IntValue 10)))))
+        (list (cons 'x (box (make-int-value 10)))))
     (list (make-hash
-        (list (cons 'x (box (IntValue 10))))))
+        (list (cons 'x (box (make-int-value 10))))))
     test-env
     (VoidValue)))
-(check-equal? (interp-expr (OldExpr (IdExpr 'x)) test-frame8) (IntValue 10))
+(check-equal? (interp-expr (OldExpr (IdExpr 'x)) test-frame8) (make-int-value 10))
 
 (check-equal? test-frame8 (Frame (make-hash) 
     (make-hash
-        (list (cons 'x (box (IntValue 10)))))
+        (list (cons 'x (box (make-int-value 10)))))
     (list (make-hash
-        (list (cons 'x (box (IntValue 10))))))
+        (list (cons 'x (box (make-int-value 10))))))
     test-env
     (VoidValue)))
+
+(define double (parse-fundef 
+        '(fun (double [x : int]) -> int
+            (return (+ x x)))))
+
+(verify-fun double)
+

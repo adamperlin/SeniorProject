@@ -5,13 +5,16 @@
 (require racket/struct)
 
 
-(provide interp-expr IntValue BoolValue VoidValue Value Frame new-frame interp-stmt interp-prog top-interp)
+(provide int32 int32? verify-fun interp-expr IntValue BoolValue VoidValue Value Frame new-frame interp-stmt interp-prog top-interp)
 
 ; values which can be produced through iterpretation
 (struct Value () #:transparent)
 (struct IntValue Value [val] #:transparent)
 (struct BoolValue Value [val] #:transparent)
 (struct VoidValue Value () #:transparent)
+
+(define int32? (bitvector 32))
+(define (int32 x) (bv x int32?))
 
 ; represents an instance of a stack frame for a single function
 ; note that because nested scopes can be defined dynamically, the
@@ -22,8 +25,7 @@
   (Frame (make-hash) (make-hash) (cons (make-hash) '()) (make-hash) (Value)))
 
 ; sets the value of a local variable in the current scope
-(define/contract (set-local frame name value)
-  (-> Frame? symbol? Value? void?)
+(define (set-local frame name value)
   (match-let*
       ([(Frame params _ locals-stack _ ret) frame]
        [cur-locals (car locals-stack)])
@@ -36,8 +38,7 @@
     ; otherwise create a new box for the binding
       [else (hash-set! cur-locals name (box value))])))
 
-(define/contract (get-local frame name)
-  (-> Frame? symbol? Value?)
+(define (get-local frame name)
   (match-let*
       ([(Frame params _ locals-stack _ ret) frame]
        [cur-locals (car locals-stack)])
@@ -77,6 +78,11 @@
         ([(Frame params _ locals-stack _ ret) frame])
         (set-Frame-locals-stack! frame (cdr locals-stack))))
 
+(define (push-scope frame scope)
+    (match-let*
+        ([(Frame params _ locals-stack _ ret) frame])
+        (set-Frame-locals-stack! frame (cons scope locals-stack))))
+
 (define/contract (as-bool b)
   (-> BoolExpr? boolean?)
   (equal? b 'true))
@@ -112,69 +118,62 @@
 (define-syntax (prim stx)
   (syntax-parse stx
     [(_ op t1 t2 ret func)
-        (with-syntax ([id (id-prepend "prim" #'op)]
-                        [guard1 (id-append #'t1 "?")]
-                        [guard2 (id-append #'t2 "?")]
-                        [ret-guard (id-append #'ret "?")])
-            #'(define/contract (id x y)
-                (-> guard1 guard2 ret-guard) 
+        (with-syntax ([id (id-prepend "prim" #'op)])
+            #'(define (id x y)
                 (match (cons x y)
                 [(cons (t1 v1) (t2 v2)) (ret (func v1 v2))]
                 [other (error 'err (format "bad types for ~v: ~v ~v" id x y))])))]
     ; unary operation variant
     [(_ op argt ret func)
-        (with-syntax ([id (id-prepend "prim" #'op)]
-                      [arg-guard (id-append #'argt "?")]
-                      [ret-guard (id-append #'ret "?")])
-
-            #'(define/contract (id x) 
-                (-> arg-guard ret-guard)
+        (with-syntax ([id (id-prepend "prim" #'op)])
+            #'(define (id x) 
                 (match x
                     [(argt v) (ret (func v))]
                     [other (error 'err (format "bad types for ~v: ~v" id x))])))]))
 
 (define/contract (safe-div a b)
-  (-> integer? integer? integer?)
-  (when (= b 0)
+  (-> int32? int32? int32?)
+  (when (bveq b (int32 0))
     (error 'divide-by-zero "division by zero"))
-    (quotient a b))
+    (bvsdiv a b))
 
 (define/contract (shiftl n m)
-    (-> integer? integer? integer?)
-    (arithmetic-shift n m))
+    (-> int32? int32? int32?)
+    (bvshl n m))
 
 (define/contract (shiftr n m)
-    (-> integer? integer? integer?)
-    (arithmetic-shift n (- m)))
+    (-> int32? int32? int32?)
+    (bvashr n m))
+
+(define bvadd1 (curryr bvadd (int32 1)))
+(define bvsub1 (curryr bvsub (int32 1)))
 
 ; primitive definitions using the macros...
-(prim + IntValue IntValue IntValue +)
-(prim - IntValue IntValue IntValue -)
-(prim * IntValue IntValue IntValue *)
+(prim + IntValue IntValue IntValue bvadd)
+(prim - IntValue IntValue IntValue bvsub)
+(prim * IntValue IntValue IntValue bvmul)
 (prim / IntValue IntValue IntValue safe-div)
-(prim % IntValue IntValue IntValue modulo)
-(prim band IntValue IntValue IntValue bitwise-and)
-(prim bor IntValue IntValue IntValue bitwise-ior)
-(prim xor IntValue IntValue IntValue bitwise-xor)
+(prim % IntValue IntValue IntValue bvsmod)
+(prim band IntValue IntValue IntValue bvand)
+(prim bor IntValue IntValue IntValue bvor)
+(prim xor IntValue IntValue IntValue bvxor)
 (prim >> IntValue IntValue IntValue shiftr)
 (prim << IntValue IntValue IntValue shiftl)
-(prim and BoolValue BoolValue BoolValue and)
-(prim or BoolValue BoolValue BoolValue or)
-(prim > IntValue IntValue BoolValue >)
-(prim < IntValue IntValue BoolValue <)
-(prim >= IntValue IntValue BoolValue >=)
-(prim <= IntValue IntValue BoolValue <=)
+(prim and BoolValue BoolValue BoolValue &&)
+(prim or BoolValue BoolValue BoolValue ||)
+(prim > IntValue IntValue BoolValue bvsgt)
+(prim < IntValue IntValue BoolValue bvslt)
+(prim >= IntValue IntValue BoolValue bvsge)
+(prim <= IntValue IntValue BoolValue bvsle)
 
 ; unary operations
 (prim ! BoolValue BoolValue not)
-(prim ~ IntValue IntValue bitwise-not)
-(prim neg IntValue IntValue -)
+(prim ~ IntValue IntValue bvnot)
+(prim neg IntValue IntValue bvneg)
 
 ; inc/dec
-(prim add1 IntValue IntValue add1)
-(prim sub1 IntValue IntValue sub1)
-
-
+(prim add1 IntValue IntValue bvadd1)
+(prim sub1 IntValue IntValue bvsub1)
 
 ; there is probably a more rackety way to do this, but 
 ; essentially this is a macro which generates a map of a function
@@ -186,7 +185,9 @@
 
 (define/contract (primeq? a b)
   (-> Value? Value? Value?)
-  (BoolValue (equal? a b)))
+  (match (cons a b)
+    [(cons (IntValue i) (IntValue j)) (BoolValue (bveq i j))]
+    [(cons (BoolValue k) (BoolValue l)) (BoolValue (equal? k l))]))
 
 (define/contract (primne? a b)
   (-> Value? Value? Value?)
@@ -266,7 +267,7 @@
         (begin 
             (new-scope frame arg-decls)
             (store-old frame fargs)
-            ; evalaute 'requires' preconditions
+            ; evaluate 'requires' preconditions
             (for/list ([req reqs])
                 (eval-contract req frame))
             (interp-stmt body frame)
@@ -302,7 +303,7 @@
 (define/contract (interp-expr expr frame)
   (-> Expr? Frame? Value?)
   (match expr
-    [(NumExpr n) (IntValue n)]
+    [(NumExpr n) (IntValue (int32 n))]
     [(? BoolExpr? b) (BoolValue (as-bool b))]
     [(IdExpr id) (get-local frame id)]
     [(BinOpExpr op lft rht) (interp-binop op
@@ -353,13 +354,11 @@
     (match-let* 
         ([(IfStmt guard then els) if-stmt]
          [guard-val (interp-expr guard frame)])
-         (match guard-val
-            [(BoolValue #t) (interp-stmt then frame)]
-            [(BoolValue #f) 
-                (match els
+         (if (BoolValue-val guard-val)
+            (interp-stmt then frame)
+            (match els
                     [(Some els-stmt) (interp-stmt (Some-v els) frame)]
-                    [None 'continue])])))
-
+                    [None 'continue]))))
 
 ; returns involve simply setting the return slot in the interpreter stack frame, 
 ; and returning a 'return symbol, which indicates to the caller to propagate 
@@ -393,7 +392,7 @@
     
 (define (zero-val-for typ)
     (match typ
-        ['int (IntValue 0)]
+        ['int (IntValue (int32 0))]
         ['bool (BoolValue #f)]))
 
 ; we deal with early returns as a base case when we're interpreting a sequence of statements...
@@ -477,3 +476,56 @@
         (define fundefs (map parse-fundef prog))
         (typecheck-program fundefs)
         (interp-prog fundefs)))
+
+(define (eval-contract-cond con frame)
+    (match-let*
+        ([(Contract ctype expr) con]
+         [res (interp-expr expr frame)])
+         (BoolValue-val res)))
+
+
+(define (rosette-type ty)
+    (match ty
+        ['int int32?]
+        ['bool boolean?]))
+
+(define (value-type ty)
+    (match ty
+        ['int IntValue]
+        ['bool BoolValue]))
+
+(define (fresh-var decl)
+    (match-let*
+        ([(Decl name ty _) decl])
+        ((value-type ty) (constant name (rosette-type ty)))))
+
+(define (verify-fun fundef)
+    (match-let*
+        ([(Fundef id fargs rtype requires ensures body) fundef]
+         [frame (Frame (make-hash) (make-hash) (list (make-hash)) (make-hash) (VoidValue))])
+         (define cur-scope (make-hash))
+         (begin
+            (print "here")
+            (print fargs)
+            (foldl (lambda (decl args)
+                (begin 
+                    (hash-set! args (Decl-name decl) (box (fresh-var decl)))
+                 args))
+                cur-scope
+                fargs)
+            (set-Frame-params! frame (hash-copy cur-scope))
+            (println (format "cur-scope: ~v" cur-scope))
+            (push-scope frame cur-scope)
+            ;(store-old frame fargs)
+            ; evaluate 'requires' preconditions
+            ;(for/list ([req reqs])
+            ;    (eval-contract req frame))
+            (interp-stmt body frame)
+            (println (format "frame-return: ~v" (Frame-return frame)))
+            (println (format "params: ~v" (Frame-params frame)))
+            ; evalaute 'ensures' post conditions
+
+            (printf "vc-asserts: ~v" (vc-asserts (vc)))
+            
+            (for/list ([en ensures])
+                (assert (eval-contract-cond en frame))))))
