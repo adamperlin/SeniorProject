@@ -5,8 +5,8 @@
 (require racket/struct)
 
 
-(provide int32 int32? verify-fun interp-expr 
-    Scope new-scope push-scope set-local get-local Binding IntValue BoolValue VoidValue Value Frame new-frame interp-stmt interp-prog top-interp)
+(provide int32 int32? interp-expr 
+    Scope new-scope eval-decls push-scope set-local get-local Binding IntValue BoolValue VoidValue Value Frame new-frame interp-stmt interp-prog top-interp)
 
 ; values which can be produced through iterpretation
 (struct Value () #:transparent)
@@ -21,24 +21,34 @@
 ; note that because nested scopes can be defined dynamically, the
 ; frame has its own internal stack, locals-stack, for pushing and popping the internal scopes
 (struct/contract Frame ([params hash?] [old-params hash?] [locals-stack list?] [top-env hash?] [return (or/c Value? void?)]) #:transparent)
-(define/contract (new-frame)
-  (-> Frame?)
-  (Frame (hash) (hash) (list (Scope 0 (hash))) (hash) (Value)))
+(define (new-frame [top-env (hash)])
+  (Frame (hash) (hash) (list (Scope 0 (hash))) top-env (Value)))
 
 
 (struct Scope [id bindings] #:transparent)
 (struct Binding [id value] #:transparent)
+
+(define (lookup-binding scope name)
+    (match-let 
+        ([(Scope id bindings) scope])
+            (if (hash-has-key? bindings name)
+                (Some (hash-ref bindings name))
+                (None))))
 
 ; sets the value of a local variable in the current scope
 (define (set-local frame name value)
   (match-let*
       ([(Frame params _ locals-stack _ ret) frame]
        [scope (car locals-stack)]
+       [existing-binding (lookup-binding scope name)]
+       [new-binding (match existing-binding
+            [(Some (Binding id old-val)) (Binding id value)]
+            [(None) (Binding (Scope-id scope) value)])]
        [new-locals (struct-copy Scope scope
                             [bindings 
                                 (hash-set (Scope-bindings scope) 
                                     name 
-                                    (Binding (Scope-id scope) value))])])
+                                    new-binding)])])
     (struct-copy Frame frame 
         [locals-stack 
             (cons new-locals
@@ -57,30 +67,81 @@
     (-> Frame? symbol? (-> any/c any/c) Frame?)
     (set-local frame name (func (get-local frame name))))
 
+;(hash 'i (Binding 1 (IntValue (bv #x00000000 32))) 'sum (Binding 1 (IntValue (bv #x00000000 32))))
+;(Binding id (interp-expr e frame))
+(define (overwrite-current-binding frame decl)
+    (match-let* ([(Decl name typ maybe-expr) decl]
+                    [(Frame params _ locals-stack _ ret) frame]
+                    [(Scope id bindings) (car locals-stack)])
+
+            ; evaluate the associated expression in each new binding
+            (define new-bindings (match maybe-expr 
+                                        [(Some e) 
+                                            (hash-set (Scope-bindings (car locals-stack)) name (Binding id (interp-expr e frame)))]
+                                        [(None) 
+                                            (hash-set (Scope-bindings (car locals-stack)) name (Binding id (zero-val-for typ)))]))
+            (define next-scope (Scope id new-bindings))
+        (struct-copy Frame frame [locals-stack (cons next-scope (cdr locals-stack))])))
+
+(define (eval-decls decls frame)
+         (foldl (lambda (decl cur-frame) (overwrite-current-binding cur-frame decl))
+            frame decls))
+
+(define (eval-args arg-decls frame)
+    (map (match-lambda
+        [(Decl id typ maybe-expr)
+            (match maybe-expr
+                [(Some e) (cons id (interp-expr e frame))])]) arg-decls))
+
+
+(define (add-bindings frame name*values)
+    (match-let*
+        ([(Frame params _ locals-stack _ ret) frame]
+         [cur-scope (car locals-stack)])
+         
+         (foldl (lambda (name*value cur-frame)
+            (set-local cur-frame (car name*value) (cdr name*value))) frame name*values)))
+
 ; creates a new scope by pushing a new hashmap onto the local scopes stack
-(define (new-scope frame locals)
+(define (new-scope frame)
   (match-let*
       ([(Frame params _ locals-stack _ ret) frame]
        [cur-scope (car locals-stack)]
+       [new-id (+ 1 (Scope-id cur-scope))])
         ; we copy the bindings that are in the top entry of the local stack into our nested scope,
-       [next-scope (struct-copy
-                        Scope
-                        cur-scope
-                        [id (+ 1 (Scope-id cur-scope))])]
-        [new-frame (push-scope frame next-scope)])
-    (foldl (lambda (decl frame)
-        (match-let*
-             ([(Decl name typ maybe-expr) decl]
-             ; evaluate the associated expression in each new binding
-             [val (match maybe-expr 
-                    [(Some e) (interp-expr e frame)]
-                    [(None) (zero-val-for typ)])])
-            (set-local frame name val))) new-frame locals)))
+    ; (define new-bindings (foldl 
+    ;     (lambda (name-val bindings)
+    ;         (hash-set bindings (car name-val) (Binding new-id (cdr name-val))))
+    ;     (Scope-bindings cur-scope) 
+    ;     name-vals))
+    (define next-scope (Scope new-id (Scope-bindings cur-scope)))
+    (push-scope frame next-scope)))
+
+(define (update-binding old new)
+  (match-let*
+      ([(Binding n1 val1) old]
+       [(Binding n2 val2) new])
+      (if (= n1 n2) new old)))
+
+(define (merge-scopes scope-a scope-b)
+  (define bindings-a (Scope-bindings scope-a))
+  (define bindings-b (Scope-bindings scope-b))
+  (define keys (hash-keys bindings-a))
+  (Scope (Scope-id scope-a) (foldl (lambda (name new-bindings)
+         (if (hash-has-key? bindings-b name)
+              (hash-set new-bindings name (update-binding (hash-ref bindings-a name) (hash-ref bindings-b name)))
+              (hash-set new-bindings name (hash-ref bindings-a name)))) (hash) keys)))
 
 (define (pop-scope frame)
     (match-let* 
         ([(Frame params _ locals-stack _ ret) frame])
-        (struct-copy Frame frame [locals-stack (cdr locals-stack)])))
+        (define cur-scope (car locals-stack))
+        (define new-stack (match (cdr locals-stack)
+            ['() '()]
+            [(cons parent-scope rst) 
+                (cons (merge-scopes parent-scope cur-scope) rst)]))
+    
+        (struct-copy Frame frame [locals-stack new-stack])))
 
 (define (push-scope frame scope)
     (match-let*
@@ -220,8 +281,6 @@
                        'and primand
                        'or primor))
 
-
-
 (define/contract (interp-binop op lft-val rht-val)
   (-> BinOp? Value? Value? Value?)
   (unless (hash-has-key? prim-funcs op)
@@ -254,7 +313,7 @@
             (let*
                 ([name (Decl-name decl)]
                 [val (get-local frame name)])
-            (hash-set old-map name val)) (hash) fargs))])
+            (hash-set old-map name val))) (hash) fargs)])
             (struct-copy Frame frame [old-params old])))
 
 (define (eval-contract con frame)
@@ -279,20 +338,22 @@
     (match-let*
         ([(Frame params _ locals top-env return) frame]
          [(Fundef id fargs rtype reqs ens body) (hash-ref top-env id)]
-         [new-frame (Frame (make-hash) (make-hash) (list (make-hash)) (Frame-top-env frame) (VoidValue))]
+         [frame0 (new-frame top-env)]
          [arg-decls (zip-decls arg-exprs fargs)])
-        (begin 
-            (new-scope frame arg-decls)
-            (store-old frame fargs)
+        (begin
+            (define frame1 (new-scope frame0))
+            (define frame2 (add-bindings frame1 (eval-args arg-decls frame)))
+            (define frame3 (store-old frame2 fargs))
             ; evaluate 'requires' preconditions
             (for/list ([req reqs])
-                (eval-contract req frame))
-            (interp-stmt body frame)
+               (eval-contract req frame3))
+
+            (define frame4 (cdr (interp-stmt body frame3)))
             ; evalaute 'ensures' post conditions
             (for/list ([en ens])
-                (eval-contract en frame))
+                (eval-contract en frame4))
             ; return value for a function is stored in the 'return' slot of the frame
-            (Frame-return frame))))
+            (Frame-return frame4))))
 
 (define/contract (interp-call-expr expr frame)
     (-> CallExpr? Frame? Value?)
@@ -301,21 +362,21 @@
         (interp-call id cargs frame)))
 
 (define/contract (interp-call-stmt stmt frame)
-    (-> CallStmt? Frame? symbol?)
+    (-> CallStmt? Frame? pair?)
     (match-let*
         ([(CallStmt id cargs) stmt])
-        (interp-call id cargs frame)
-        'continue))
+        ((interp-call id cargs frame)
+        (cons 'continue frame))))
 
-; (define (interp-old-expr old-expr frame)
-;     (match-let*
-;         ([(OldExpr expr) old-expr]
-;          [(Frame _ old-params locals-stack _ _) frame])
-;         (begin
-;             (set-Frame-locals-stack! frame (cons old-params locals-stack))
-;             (define res (interp-expr expr frame))
-;             (set-Frame-locals-stack! frame (cdr (Frame-locals-stack frame)))
-;             res)))
+(define (interp-old-expr old-expr frame)
+    (match-let*
+        ([(OldExpr expr) old-expr]
+         [(Frame _ old-params locals-stack _ _) frame]
+         [new-frame (new-frame)])
+        (begin
+            (define cur-frame (new-scope new-frame))
+            (define cur-frame1 (add-bindings cur-frame (hash->list old-params)))
+            (interp-expr expr cur-frame1))))
 
 (define/contract (interp-expr expr frame)
   (-> Expr? Frame? Value?)
@@ -328,7 +389,7 @@
                                           (interp-expr rht frame))]
     [(CallExpr id args) (interp-call-expr expr frame)]
     [(UnOpExpr op expr) (interp-unop op (interp-expr expr frame))]
-    ;[(OldExpr _) (interp-old-expr expr frame)]
+    [(OldExpr _) (interp-old-expr expr frame)]
     ['@result (Frame-return frame)]))
 
 
@@ -416,24 +477,24 @@
 ; at each step we either recurse and continue, or propagate the 'return upwards
 (define (interp-sequence stmts frame) 
     (match stmts
-        ['() 'continue]
-        [(cons fst rst) (let 
-                            ([fst-val (interp-stmt fst frame)])
-                            (if (equal? fst-val 'return)
-                                'return
-                                (interp-sequence rst frame)))]))
+        ['() (cons 'continue frame)]
+        [(cons fst rst) (match-let 
+                            ([(cons fst-signal new-frame) (interp-stmt fst frame)])
+                            (if (equal? fst-signal 'return)
+                                (cons 'return new-frame)
+                                (interp-sequence rst new-frame)))]))
 
 ; begin statements involve the introduction of a new scope, so we may be adding
 ; to the locals stack here in addition to interpreting a sequence of statements
 (define/contract (interp-begin begin-stmt frame)
-    (-> BeginStmt? Frame? symbol?)
+    (-> BeginStmt? Frame? pair?)
     (match-let*
-        ([(BeginStmt decls stmts) begin-stmt])
-         (begin 
-            (new-scope frame decls)
-            (define ret-signal (interp-sequence stmts frame))
-            (pop-scope frame)
-            ret-signal)))
+        ([(BeginStmt decls stmts) begin-stmt]
+         [frame1 (new-scope frame)]
+         [frame2 (eval-decls decls frame1)]
+         [(cons signal frame3) (interp-sequence stmts frame2)]
+         [frame4 (pop-scope frame3)])
+    (cons signal frame4)))
 
 (define/contract (interp-fundef fundef tenv)
     (-> Fundef? hash? void?)
@@ -448,7 +509,6 @@
         [(IncStmt lv) (interp-inc stmt frame)]
         [(DecStmt lv) (interp-dec stmt frame)]
         [(AssignStmt op target src) (interp-assign stmt frame)]
-        ; these statements could propagate a 'return upwards, so we let them decide
         [(IfStmt _ _ _ ) (interp-if stmt frame)]
         [(WhileStmt _ _) (interp-while stmt frame)]
         [(BeginStmt _ _) (interp-begin stmt frame)]
@@ -479,9 +539,8 @@
             (unless (hash-has-key? tenv 'main)
                 (error 'no-main "no main function defined"))
             (define initial-frame (Frame (make-hash) (make-hash) (list (make-hash)) tenv (VoidValue)))
-            (define main-call (CallStmt 'main '()))
-            (interp-stmt main-call initial-frame)
-            (Frame-return initial-frame))))
+            (define main-call (CallExpr 'main '()))
+            (interp-expr main-call initial-frame))))
 
 (define (top-interp prog)
     (begin 
@@ -511,33 +570,36 @@
         ([(Decl name ty _) decl])
         ((value-type ty) (constant name (rosette-type ty)))))
 
-(define (verify-fun fundef)
-    (match-let*
-        ([(Fundef id fargs rtype requires ensures body) fundef]
-         [frame (Frame (make-hash) (make-hash) (list (make-hash)) (make-hash) (VoidValue))])
-         (define cur-scope (make-hash))
-         (begin
-            (print "here")
-            (print fargs)
-            (foldl (lambda (decl args)
-                (begin 
-                    (hash-set! args (Decl-name decl) (box (fresh-var decl)))
-                 args))
-                cur-scope
-                fargs)
-            ;(set-Frame-params! frame (hash-copy cur-scope))
-            (println (format "cur-scope: ~v" cur-scope))
-            (push-scope frame cur-scope)
-            ;(store-old frame fargs)
-            ; evaluate 'requires' preconditions
-            ;(for/list ([req reqs])
-            ;    (eval-contract req frame))
-            (interp-stmt body frame)
-            (println (format "frame-return: ~v" (Frame-return frame)))
-            (println (format "params: ~v" (Frame-params frame)))
-            ; evalaute 'ensures' post conditions
+; (define (verify-fun fundef)
+;     (match-let*
+;         ([(Fundef id fargs rtype requires ensures body) fundef]
+;          [frame (Frame (make-hash) (make-hash) (list (make-hash)) (make-hash) (VoidValue))])
+;          (define cur-scope (make-hash))
+;          (begin
+;             (foldl (lambda (decl args)
+;                 (begin 
+;                     (hash-set! args (Decl-name decl) (box (fresh-var decl)))
+;                  args))
+;                 cur-scope
+;                 fargs)
+;             ;(set-Frame-params! frame (hash-copy cur-scope))
+;             (push-scope frame cur-scope)
+;             ;(store-old frame fargs)
+;             ; evaluate 'requires' preconditions
+;             (for/list ([req reqs])
+;             ;    (eval-contract req frame))
+;             (interp-stmt body frame)
+;             (println (format "frame-return: ~v" (Frame-return frame)))
+;             (println (format "params: ~v" (Frame-params frame)))
+;             ; evalaute 'ensures' post conditions
 
-            (printf "vc-asserts: ~v" (vc-asserts (vc)))
+;             (printf "vc-asserts: ~v" (vc-asserts (vc)))
             
-            (for/list ([en ensures])
-                (assert (eval-contract-cond en frame))))))
+;             (for/list ([en ensures])
+;                 (assert (eval-contract-cond en frame)))))))
+
+
+
+; (define test-decls (list (Decl 'i 'int (Some (NumExpr 1)))
+;     (Decl 'j 'int (Some (UnOpExpr 'neg (IdExpr 'i))))))
+; (eval-decls test-decls (new-frame))
