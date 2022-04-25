@@ -5,7 +5,7 @@
 (require racket/struct)
 
 
-(provide int32 int32? interp-expr 
+(provide int32 int32? interp-expr verify-fun 
     Scope new-scope eval-decls push-scope set-local get-local Binding IntValue BoolValue VoidValue Value Frame new-frame interp-stmt interp-prog top-interp)
 
 ; values which can be produced through iterpretation
@@ -27,6 +27,12 @@
 
 (struct Scope [id bindings] #:transparent)
 (struct Binding [id value] #:transparent)
+
+(define-syntax-rule
+  (define-forall (p) (id param ...) body ...)
+  (define (id param ... maybe-union)
+    (for/all ([p maybe-union #:exhaustive])
+      body ...)))
 
 (define (lookup-binding scope name)
     (match-let 
@@ -55,12 +61,13 @@
                 (cdr locals-stack))])))
 
 (define (get-local frame name)
-  (match-let*
-      ([(Frame params _ locals-stack _ ret) frame]
-       [(Scope id bindings) (car locals-stack)])
-    (unless (hash-has-key? bindings name)
-      (error 'interp (format "unknown local ~v" name)))
-    (Binding-value (hash-ref bindings name))))
+  (for/all ([f frame #:exhaustive])
+    (match-let*
+        ([(Frame params _ locals-stack _ ret) f]
+        [(Scope id bindings) (car locals-stack)])
+        (unless (hash-has-key? bindings name)
+        (error 'interp (format "unknown local ~v" name)))
+        (Binding-value (hash-ref bindings name)))))
 
 ; unbox, apply function to internal value, and re-box local binding
 (define/contract (modify-local frame name func)
@@ -133,15 +140,15 @@
               (hash-set new-bindings name (hash-ref bindings-a name)))) (hash) keys)))
 
 (define (pop-scope frame)
-    (match-let* 
-        ([(Frame params _ locals-stack _ ret) frame])
-        (define cur-scope (car locals-stack))
-        (define new-stack (match (cdr locals-stack)
-            ['() '()]
-            [(cons parent-scope rst) 
-                (cons (merge-scopes parent-scope cur-scope) rst)]))
-    
-        (struct-copy Frame frame [locals-stack new-stack])))
+    (for/all ([f frame]) 
+        (match-let* 
+            ([(Frame params _ locals-stack _ ret) f])
+            (define cur-scope (car locals-stack))
+            (define new-stack (match (cdr locals-stack)
+                ['() '()]
+                [(cons parent-scope rst) 
+                    (cons (merge-scopes parent-scope cur-scope) rst)]))
+            (struct-copy Frame f [locals-stack new-stack]))))
 
 (define (push-scope frame scope)
     (match-let*
@@ -323,6 +330,11 @@
         (unless (BoolValue-val pass)
             (error ctype (format "contract check failed; frame state ~v" (car (Frame-locals-stack frame)))))))
 
+(define (eval-contract-sym con frame)
+    (match-let*
+        ([(Contract ctype expr) con])
+        (interp-expr expr frame)))
+
 (define (bind-frame-comp comp f)
     (lambda (frame) 
         (match-let*
@@ -355,14 +367,12 @@
             ; return value for a function is stored in the 'return' slot of the frame
             (Frame-return frame4))))
 
-(define/contract (interp-call-expr expr frame)
-    (-> CallExpr? Frame? Value?)
+(define (interp-call-expr expr frame)
     (match-let*
         ([(CallExpr id cargs) expr])
         (interp-call id cargs frame)))
 
-(define/contract (interp-call-stmt stmt frame)
-    (-> CallStmt? Frame? pair?)
+(define (interp-call-stmt stmt frame)
     (match-let*
         ([(CallStmt id cargs) stmt])
         ((interp-call id cargs frame)
@@ -378,8 +388,7 @@
             (define cur-frame1 (add-bindings cur-frame (hash->list old-params)))
             (interp-expr expr cur-frame1))))
 
-(define/contract (interp-expr expr frame)
-  (-> Expr? Frame? Value?)
+(define-forall (frame) (interp-expr expr)
   (match expr
     [(NumExpr n) (IntValue (int32 n))]
     [(? BoolExpr? b) (BoolValue (as-bool b))]
@@ -393,14 +402,12 @@
     ['@result (Frame-return frame)]))
 
 
-(define/contract (interp-inc inc frame)
-    (-> IncStmt? Frame? pair?)
+(define-forall (frame) (interp-inc inc)
     (match-let*
         ([(IncStmt lv) inc])
         (cons 'continue (modify-local frame lv primadd1))))
 
-(define/contract (interp-dec dec-expr frame)
-    (-> DecStmt? Frame? pair?)
+(define-forall (frame) (interp-dec dec-expr)
     (match-let*
         ([(DecStmt lv) dec-expr])
         (cons 'continue (modify-local frame lv primsub1))))
@@ -417,8 +424,7 @@
                     'set-bor= primbor
                     'set= const))
 
-(define/contract (interp-assign assign-stmt frame)
-    (-> AssignStmt? Frame? pair?)
+(define-forall (frame) (interp-assign assign-stmt)
     (match-let* 
         ([(AssignStmt op target src) assign-stmt]
          [src-val (interp-expr src frame)])
@@ -429,8 +435,7 @@
             'continue
             (modify-local frame target (curryr (hash-ref assign-funcs op) src-val)))))
 
-(define/contract (interp-if if-stmt frame)
-    (-> IfStmt? Frame? pair?)
+(define-forall (frame) (interp-if if-stmt)
     (match-let* 
         ([(IfStmt guard then els) if-stmt]
          [guard-val (interp-expr guard frame)])
@@ -443,30 +448,41 @@
 ; returns involve simply setting the return slot in the interpreter stack frame, 
 ; and returning a 'return symbol, which indicates to the caller to propagate 
 ; the return signal upwards
-(define/contract (interp-ret ret-stmt frame)
-    (-> RetStmt? Frame? pair?)
+(define-forall (frame) (interp-ret ret-stmt)
+    (printf "interp-ret: ~v\n" ret-stmt)
     (match ret-stmt
         [(RetStmt (Some e)) (let ([val (interp-expr e frame)])
+                                    (printf "val is: ~v\n" val)
                                     (cons 'return (struct-copy Frame frame [return val])))]
         [(RetStmt (None)) 
             (cons 'return (struct-copy Frame frame [return (VoidValue)]))]))
+
+(define limit (make-parameter 10))
+; simple macro to define a bounded function (from rosette documentation)
+(define-syntax-rule 
+    (define-finite (id param ...) body ...)
+    (define (id param ...)
+       (assert (> (limit) 0))
+        (parameterize ([limit (sub1 (limit))])
+            body ...)))
+
+
 
 ; while's are fairly self-explanatory, but they need
 ; to handle a possible 'return signal from the child statement
 ; note that 'continue here means continue, don't return. It doesn't correspond to 
 ; any kind of "continue" statement
-(define/contract (interp-while while-stmt frame)
-    (-> WhileStmt? Frame? pair?)
-    (match-let*
-        ([(WhileStmt guard body) while-stmt]
-        [(BoolValue b) (interp-expr guard frame)])
-        (if b 
-            (match-let* 
-                ([(cons body-signal new-frame) (interp-stmt body frame)])
-                (match body-signal
-                    ['return (cons 'return new-frame)]
-                    ['continue (interp-while while-stmt new-frame)])) 
-            (cons 'continue frame))))
+(define-finite (interp-while while-stmt frame)
+        (match-let*
+            ([(WhileStmt guard body) while-stmt]
+            [(BoolValue b) (interp-expr guard frame)])
+            (if b 
+                (match-let* 
+                    ([(cons body-signal new-frame) (interp-stmt body frame)])
+                    (match body-signal
+                        ['return (cons 'return new-frame)]
+                        ['continue (interp-while while-stmt new-frame)])) 
+                (cons 'continue frame))))
     
 (define (zero-val-for typ)
     (match typ
@@ -476,25 +492,31 @@
 ; we deal with early returns as a base case when we're interpreting a sequence of statements...
 ; at each step we either recurse and continue, or propagate the 'return upwards
 (define (interp-sequence stmts frame) 
-    (match stmts
-        ['() (cons 'continue frame)]
-        [(cons fst rst) (match-let 
-                            ([(cons fst-signal new-frame) (interp-stmt fst frame)])
-                            (if (equal? fst-signal 'return)
-                                (cons 'return new-frame)
-                                (interp-sequence rst new-frame)))]))
+        (match stmts
+            ['() (cons 'continue frame)]
+            [(cons fst rst) (printf "fst: ~v\n" fst) (match-let 
+                                ([(cons fst-signal new-frame) (interp-stmt fst frame)])
+                                (printf "new-frame: ~v\n" new-frame)
+                                (printf "fst-signal: ~v\n" fst-signal)
+                                (if (equal? fst-signal 'return)
+                                    (begin
+                                        (println "returning")
+                                        (cons 'return new-frame))
+                                    (interp-sequence rst new-frame)))]))
 
 ; begin statements involve the introduction of a new scope, so we may be adding
 ; to the locals stack here in addition to interpreting a sequence of statements
-(define/contract (interp-begin begin-stmt frame)
-    (-> BeginStmt? Frame? pair?)
+(define-forall (frame) (interp-begin begin-stmt) 
     (match-let*
         ([(BeginStmt decls stmts) begin-stmt]
-         [frame1 (new-scope frame)]
-         [frame2 (eval-decls decls frame1)]
-         [(cons signal frame3) (interp-sequence stmts frame2)]
-         [frame4 (pop-scope frame3)])
-    (cons signal frame4)))
+        (println "interp-begin: ")
+        [frame1 (new-scope frame)]
+        [frame2 (eval-decls decls frame1)]
+        [signal-frame3 (interp-sequence stmts frame2)])
+        (printf "signal-frame3: ~v\n" signal-frame3)
+        (define frame4 (pop-scope (cdr signal-frame3)))
+        (printf "frame4: ~v\n" frame4)
+        (cons (car signal-frame3) frame4)))
 
 (define/contract (interp-fundef fundef tenv)
     (-> Fundef? hash? void?)
@@ -502,8 +524,7 @@
 
 (define action-continue 'continue)
 (define action-return 'return)
-(define/contract (interp-stmt stmt frame)
-    (-> Stmt? Frame? pair?)
+(define-forall (frame) (interp-stmt stmt)
     (match stmt
         [(RetStmt _) (interp-ret stmt frame)]
         [(IncStmt lv) (interp-inc stmt frame)]
@@ -513,7 +534,7 @@
         [(WhileStmt _ _) (interp-while stmt frame)]
         [(BeginStmt _ _) (interp-begin stmt frame)]
         [(CallStmt _ _) (interp-call-stmt stmt frame)]
-        [(AnnoStmt _ _) (interp-anno-stmt  stmt frame)]))
+        [(AnnoStmt _ _) (interp-anno-stmt stmt frame)]))
 
 (define (eval-ann ann frame)
     (match-let*
@@ -570,33 +591,45 @@
         ([(Decl name ty _) decl])
         ((value-type ty) (constant name (rosette-type ty)))))
 
-; (define (verify-fun fundef)
-;     (match-let*
-;         ([(Fundef id fargs rtype requires ensures body) fundef]
-;          [frame (Frame (make-hash) (make-hash) (list (make-hash)) (make-hash) (VoidValue))])
-;          (define cur-scope (make-hash))
-;          (begin
-;             (foldl (lambda (decl args)
-;                 (begin 
-;                     (hash-set! args (Decl-name decl) (box (fresh-var decl)))
-;                  args))
-;                 cur-scope
-;                 fargs)
-;             ;(set-Frame-params! frame (hash-copy cur-scope))
-;             (push-scope frame cur-scope)
-;             ;(store-old frame fargs)
-;             ; evaluate 'requires' preconditions
-;             (for/list ([req reqs])
-;             ;    (eval-contract req frame))
-;             (interp-stmt body frame)
-;             (println (format "frame-return: ~v" (Frame-return frame)))
-;             (println (format "params: ~v" (Frame-params frame)))
-;             ; evalaute 'ensures' post conditions
+(define (unwrap val)
+    (match val
+        [(IntValue val) val]
+        [(BoolValue val) val]
+        [other (error 'unwrap-void (format "value ~v cannot be unwrapped" val))]))
 
-;             (printf "vc-asserts: ~v" (vc-asserts (vc)))
+(define (verify-fun fundef)
+    (match-let*
+        ([(Fundef id fargs rtype requires ensures body) fundef]
+         [frame (new-frame)])
+         (begin
+            (define scope-bindings (foldl (lambda (decl bindings)
+                    (hash-set bindings (Decl-name decl) (Binding 0 (fresh-var decl))))
+                (hash)
+                fargs))
+            (define cur-scope (Scope 0 scope-bindings))
+            ;(set-Frame-params! frame (hash-copy cur-scope))
+            (define frame1 (push-scope frame cur-scope))
+            ;(store-old frame fargs)
+            ; evaluate 'requires' preconditions
+            (define signal*frames (interp-stmt body frame1))
+            (for/list ([req requires])
+               (printf "eval'd contract: ~v\n" (eval-contract-sym req frame1)))
+            (printf "union contents: ~v\n" (union-contents (cdr signal*frames)))            
+            (for/all ([f (cdr signal*frames)])
+                (for/list ([en ensures])
+                                (printf "vc: ~v\n" (vc))
+                                (printf "en: ~v\n" en)
+                                (printf "eval'd ensure: ~v\n" (eval-contract-sym en f)))
+                (printf "frame-ret: ~v\n" (unwrap (Frame-return f)))))))
+
+            ; (println (format "frame: ~v" res)))))
+            ;(println (format "params: ~v" (Frame-params frame)))
+            ; evalaute 'ensures' post conditions
+
+            ;(printf "vc-asserts: ~v" (vc-asserts (vc)
             
-;             (for/list ([en ensures])
-;                 (assert (eval-contract-cond en frame)))))))
+            ;(for/list ([en ensures])
+            ;    (assert (eval-contract-cond en frame)))))))
 
 
 
