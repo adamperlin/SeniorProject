@@ -302,6 +302,15 @@
                 (set= r (% a b))))
         (return b)))))
 
+(define count-up (parse-fundef '(fun (count-up [n : int]) -> int
+        (begin
+            (declare 
+                [i : int 1])
+            (while (< i n)
+                    (begin
+                        (set+= i 1)))
+            (return i)))))
+
 ; ; function calls
 (define test-env (hash
     'max max-fun
@@ -313,6 +322,7 @@
      'e e
      'sum sum
      'gcd gcd
+     'count-up count-up
     'has-contract has-contract
     'breaks-ensures breaks-ensures))
 
@@ -415,3 +425,13 @@
 
 (check-equal? (interp-expr (OldExpr (IdExpr 'x)) test-frame8) (make-int-value 10))
 (check-equal? (interp-expr (OldExpr (BinOpExpr '+ (NumExpr 20) (IdExpr 'x))) test-frame8) (make-int-value 30))
+
+;; tests of loop bounding behavior
+
+
+(check-equal? (interp-expr (CallExpr 'count-up (list (NumExpr (depth-limit)))) (new-frame test-env))
+        (make-int-value 100))
+
+(check-exn
+    (regexp (regexp-quote "loop depth exceeded"))
+    (λ () (interp-expr (CallExpr 'count-up (list (NumExpr (add1 (depth-limit))))) (new-frame test-env))))

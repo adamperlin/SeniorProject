@@ -46,7 +46,6 @@
 (define-type Type (U BoolType IntType VoidType FunType))
 (define-predicate Type? Type)
 
-
 (define-type Vid Symbol)
 (define-predicate Vid? Vid)
 (struct IdExpr ([name : Symbol]) #:transparent)
