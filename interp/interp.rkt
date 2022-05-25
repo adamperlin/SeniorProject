@@ -6,13 +6,15 @@
 
 
 (provide int32 int32? interp-expr verify-fun depth-limit
-    Scope new-scope eval-decls push-scope set-local get-local Binding IntValue BoolValue VoidValue Value Frame new-frame interp-stmt interp-prog top-interp)
+    Scope new-scope eval-decls push-scope set-local get-local Binding IntValue BoolValue ArrayValue
+                                VoidValue Value Frame new-frame interp-stmt interp-prog top-interp)
 
 ; values which can be produced through iterpretation
 (struct Value () #:transparent)
 (struct IntValue Value [val] #:transparent)
 (struct BoolValue Value [val] #:transparent)
 (struct VoidValue Value () #:transparent)
+(struct ArrayValue Value [arr len] #:transparent)
 
 (define int32? (bitvector 32))
 (define (int32 x) (bv x int32?))
@@ -374,8 +376,8 @@
 (define (interp-call-stmt stmt frame)
     (match-let*
         ([(CallStmt id cargs) stmt])
-        ((interp-call id cargs frame)
-        (cons 'continue frame))))
+        (interp-call id cargs frame)
+        (cons 'continue frame)))
 
 (define (interp-old-expr old-expr frame)
     (match-let*
@@ -387,6 +389,55 @@
             (define cur-frame1 (add-bindings cur-frame (hash->list old-params)))
             (interp-expr expr cur-frame1))))
 
+(define (interp-new-array-expr expr frame)
+    (match-let*
+        ([(NewArrayExpr typ len-expr) expr]
+         [(IntValue len) (interp-expr len-expr frame)])
+        (when (bvsle len (int32 0))
+            (error 'interp (format "new-array must have non-zero length, got ~a" len)))
+        (ArrayValue (make-vector (bitvector->integer len)) (bitvector->integer len))))
+
+(define-syntax (in-bounds stx)
+    (syntax-parse stx
+        [(_ arr i)
+            #'(and (bvsge i (int32 0)) (bvslt i (int32 (ArrayValue-len arr))))]))
+
+(define (array-ref array-val i)
+    (match-let
+        ([(ArrayValue arr len) array-val])
+        (unless (in-bounds array-val i)
+            (error 'out-of-bounds (format "index ~a out of bounds for array" i)))
+        (vector-ref arr (bitvector->integer i))))
+
+(define (array-set arr-val i val)
+    (match-let* 
+        ([(ArrayValue arr len) arr-val])
+        (unless (in-bounds arr-val i)
+            (error 'out-of-bounds (format "index ~a out of bounds for array" i)))
+        (vector-set! arr (bitvector->integer i) val)
+        arr-val))
+
+(define (interp-array-ref-expr expr frame)
+    (match-let*
+        ([(ArrayRefExpr arr-expr idx-expr) expr]
+         [(IntValue i) (interp-expr idx-expr frame)]
+         [arr (interp-expr arr-expr frame)])
+        (array-ref arr i)))
+
+(define (interp-make-array-expr expr frame)
+    (match-let*
+        ([(MakeArrayExpr typ exprs) expr]
+         [arr-vals (map (curryr interp-expr frame) exprs)])
+         (ArrayValue
+            (list->vector arr-vals)
+            (length arr-vals))))
+
+(define (interp-array-length-expr expr frame)
+    (match-let*
+        ([(ArrayLengthExpr arr-exp) expr]
+         [(ArrayValue arr len) (interp-expr arr-exp frame)])
+        (IntValue (int32 len))))
+
 (define-forall (frame) (interp-expr expr)
   (match expr
     [(NumExpr n) (IntValue (int32 n))]
@@ -397,6 +448,10 @@
                                           (interp-expr rht frame))]
     [(CallExpr id args) (interp-call-expr expr frame)]
     [(UnOpExpr op expr) (interp-unop op (interp-expr expr frame))]
+    [(NewArrayExpr _ _) (interp-new-array-expr expr frame)]
+    [(MakeArrayExpr _ _) (interp-make-array-expr expr frame)]
+    [(ArrayRefExpr _ _) (interp-array-ref-expr expr frame)]
+    [(ArrayLengthExpr _) (interp-array-length-expr expr frame)]
     [(OldExpr _) (interp-old-expr expr frame)]
     ['@result (Frame-return frame)]))
 
@@ -528,6 +583,15 @@
         ;(printf "interp-begin: vc-assumes: ~v\n" (vc-assumes (vc)))
         (cons (car signal-frame3) frame4)))
 
+(define (interp-array-set-stmt stmt frame)
+    (match-let*
+        ([(ArraySetStmt arr-lv idx-expr val-expr) stmt]
+         [arr-val (get-local frame arr-lv)]
+         [(IntValue idx) (interp-expr idx-expr frame)]
+         [val (interp-expr val-expr frame)])
+         (array-set arr-val idx val)
+         (cons 'continue frame)))
+
 (define/contract (interp-fundef fundef tenv)
     (-> Fundef? hash? void?)
     (hash-set! tenv (Fundef-id fundef) fundef))
@@ -540,6 +604,7 @@
         [(IncStmt lv) (interp-inc stmt frame)]
         [(DecStmt lv) (interp-dec stmt frame)]
         [(AssignStmt op target src) (interp-assign stmt frame)]
+        [(ArraySetStmt _ _ _) (interp-array-set-stmt stmt frame)]
         [(IfStmt _ _ _ ) (interp-if stmt frame)]
         [(WhileStmt _ _) (interp-while stmt frame)]
         [(BeginStmt _ _) (interp-begin stmt frame)]

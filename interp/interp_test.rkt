@@ -46,12 +46,17 @@
 (check-equal? (interp-expr (NumExpr 1) (new-frame)) (make-int-value 1))
 (check-equal? (interp-expr (NumExpr -1000) (new-frame)) (make-int-value -1000))
 
+(define (make-array lst)
+    (ArrayValue (list->vector lst) (length lst)))
 
+(define (make-int-array lst)
+    (make-array (map make-int-value lst)))
 
 ;(define test-frame (Frame (make-hash) (make-hash) (list (hash 'a (box (make-int-value 3)) 'b (box (BoolValue #t)))) (make-hash) (make-int-value 0)))
 (define test-frame (frame-with-scope 
     (Scope 1
-        (hash 'a (Binding 1 (make-int-value 3)) 'b (Binding 1 (BoolValue #t))))))
+        (hash 'a (Binding 1 (make-int-value 3)) 'b (Binding 1 (BoolValue #t))
+              'c (Binding 1 (make-int-array (list 1 2 3 4 5)))))))
 
 ;; simple expression tests
 
@@ -71,6 +76,20 @@
 (check-equal? (interp-expr (BinOpExpr 'or 'true 'false) test-frame) (BoolValue #t))
 (check-equal? (interp-expr (UnOpExpr '! 'true) test-frame) (BoolValue #f))
 (check-equal? (interp-expr (UnOpExpr 'neg (NumExpr 10)) test-frame) (make-int-value -10))
+
+(check-equal? (interp-expr (ArrayRefExpr (IdExpr 'c) (NumExpr 2)) test-frame) (make-int-value 3))
+(check-equal? (interp-expr (ArrayRefExpr (IdExpr 'c) (NumExpr 3)) test-frame) (make-int-value 4))
+(check-equal? (interp-expr (ArrayRefExpr (IdExpr 'c) (NumExpr 0)) test-frame) (make-int-value 1))
+(check-equal? (interp-expr (NewArrayExpr 'int (NumExpr 20)) test-frame) (ArrayValue (make-vector 20) 20)) 
+
+(check-equal? (interp-expr (parse-expr '(make-array int 10 20 30)) test-frame) 
+    (ArrayValue (vector (make-int-value 10) (make-int-value 20) (make-int-value 30)) 3))
+
+(check-exn (regexp (regexp-quote "out-of-bounds"))
+    (λ () (interp-expr (parse-expr '(array-ref c 5)) test-frame)))
+
+(check-exn (regexp (regexp-quote "out-of-bounds"))
+    (λ () (interp-expr (parse-expr '(array-ref c -1)) test-frame)))
 
 ; ; inc/dec tests
 (define test-frame1  (frame-with-scope (Scope 1 (hash 'a (Binding 1 (make-int-value 3)) 'b (Binding 1 (BoolValue #t))))))
@@ -149,6 +168,27 @@
         (frame-with-scope 
             (Scope 1 (hash 'i (Binding 1 (make-int-value 0)) 
               'sum (Binding 1 (make-int-value 0))))))
+
+(define test-frame-with-array (frame-with-scope 
+    (Scope 1 (hash 'arr (Binding 1 (make-int-array (list -1 3 100 23 101)))))))
+
+(check-equal? 
+    (interp-stmt (ArraySetStmt 'arr (NumExpr 0) (BinOpExpr '* (NumExpr 10) (NumExpr 11))) test-frame-with-array)
+    (cons 'continue
+        (frame-with-scope 
+          (Scope 1 (hash 'arr (Binding 1 (make-int-array (list 110 3 100 23 101))))))))
+
+(check-equal? 
+    (interp-stmt (ArraySetStmt 'arr (NumExpr 4) (BinOpExpr '<< (NumExpr 1) (NumExpr 4))) test-frame-with-array)
+    (cons 'continue
+        (frame-with-scope 
+          (Scope 1 (hash 'arr (Binding 1 (make-int-array (list 110 3 100 23 16))))))))
+
+(check-exn (regexp (regexp-quote "out-of-bounds"))
+    (λ () 
+        (interp-stmt 
+            (ArraySetStmt 'arr (NumExpr -1) (BinOpExpr '<< (NumExpr 1) (NumExpr 4))) 
+            test-frame-with-array)))
 
 ; (define test-frame5 (Frame (make-hash) (make-hash) 
 ;     (list 
@@ -385,7 +425,63 @@
                 (return true)
                 (return false))))))
 
+(define arr-prog
+    '(
+        (fun (rotate-left [arr : (array int)]) -> void
+        (begin
+            (declare
+                [i : int 0]
+                [fst : int])
+            (if (< (length arr) 1)
+                (return))
+            (set= fst (array-ref arr 0))
+            (while (< (+ i 1) (length arr))
+                (begin
+                    (array-set arr i (array-ref arr (+ i 1)))
+                    (inc i)))
+            (array-set arr i fst)
+            (return)))
+    (fun (main) -> (array int)
+        (begin
+            (declare
+                [arr : (array int) (make-array int 1 2 3 4 5 6 7)])
+            (rotate-left arr)
+            (return arr)))
+    ))
+
+(check-equal? (top-interp arr-prog) (make-int-array (list 2 3 4 5 6 7 1)))
+
 (check-equal? (top-interp prog1) (BoolValue #t))
+
+(define sort-prog '( 
+    (fun (insert-sort [arr : (array int)])
+        (begin
+            (declare
+                [i : int 0]
+                [temp : int])
+            (while (< i (length arr))
+                (begin
+                    (declare
+                        [j : int (+ i 1)]
+                        [min-idx : int i])
+                    (while (< j (length arr))
+                        (begin
+                            (if (< (array-ref arr j) (array-ref arr min-idx))
+                                (set= min-idx j))
+                            (inc j)))
+                    (set= temp (array-ref arr i)) 
+                    (array-set arr i (array-ref arr min-idx))
+                    (array-set arr min-idx temp)
+                    (inc i)))
+            (return)))
+    (fun (main) -> (array int)
+        (begin 
+            (declare 
+                [arr : (array int) (make-array int 0 -1 2 10 3 1 7)])
+            (insert-sort arr)
+            (return arr)))))
+
+(check-equal? (top-interp sort-prog) (make-int-array (list -1 0 1 2 3 7 10)))
 
 ; testing annotations
 (check-equal? (car (interp-stmt (parse-stmt '(begin 

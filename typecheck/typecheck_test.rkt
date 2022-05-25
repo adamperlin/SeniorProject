@@ -5,7 +5,7 @@
 (require "../parser/parser.rkt")
 
 ; expression typechecking tests
-(define test-env (hash 'a 'int 'b 'bool))
+(define test-env (hash 'a 'int 'b 'bool 'arr (ArrayType 'int)))
 (check-equal? (typecheck-expr (IdExpr 'a) test-env) 'int)
 (check-exn (regexp (regexp-quote "unknown identifier 'c")) (lambda ()
     (typecheck-expr (IdExpr 'c) test-env)))
@@ -21,6 +21,40 @@
 
 (check-exn (regexp (regexp-quote "bad operand type for '>>: 'bool 'int"))
     (lambda () (typecheck-expr (BinOpExpr '>> (IdExpr 'b) (NumExpr 2)) test-env)))
+
+; array expression tests
+(check-equal?
+    (typecheck-expr (parse-expr '(length arr)) test-env) 'int)
+
+(check-exn
+    (regexp (regexp-quote "cannot take length of non-array type"))
+       (lambda () (typecheck-expr (parse-expr '(length a)) test-env)))
+
+(check-exn
+    (regexp (regexp-quote "invalid array-ref expression; expected index of type int, got bool"))
+       (lambda () (typecheck-expr (parse-expr '(array-ref arr true)) test-env)))
+
+(check-exn
+    (regexp (regexp-quote "invalid array-ref expression; expected array, got int"))
+       (lambda () (typecheck-expr (parse-expr '(array-ref a 10)) test-env)))
+
+(check-equal?
+    (typecheck-expr (parse-expr '(array-ref arr 0)) test-env) 'int)
+
+(check-equal?
+    (typecheck-expr (parse-expr '(array-ref arr a)) test-env) 'int)
+
+(check-equal? (typecheck-expr (parse-expr '(new-array int (* 20 a))) test-env)
+    (ArrayType 'int))
+
+(check-equal? (typecheck-expr (parse-expr '(new-array (array bool) (+ 2 3))) test-env)
+    (ArrayType (ArrayType 'bool)))
+
+(check-equal? (typecheck-expr (parse-expr '(make-array int 10 20 30)) test-env)
+                (ArrayType 'int))
+
+(check-exn (regexp (regexp-quote "type mismatch")) 
+    (λ () (typecheck-expr (parse-expr '(make-array int 10 20 true)) test-env)))
 
 ;unop tests
 (check-equal? 
@@ -70,6 +104,35 @@
 
 (check-exn (regexp (regexp-quote "cannot use operator inc on type 'bool in (IncStmt 'b)"))
     (lambda () (typecheck-stmt (parse-stmt '(inc b)) test-env)))
+
+(check-equal? (typecheck-stmt (parse-stmt '(array-set arr 0 (+ 1 1000))) test-env) (void))
+(check-exn (regexp (regexp-quote "cannot array-set non-array type int"))
+    (λ () (typecheck-stmt (parse-stmt '(array-set a 0 1)) test-env)))
+
+(check-exn (regexp (regexp-quote "array-set type mismatch: expected value of type int got bool"))
+    (λ () (typecheck-stmt (parse-stmt '(array-set arr 0 false)) test-env)))
+
+(check-exn (regexp (regexp-quote "array-set index must be of type int, got bool"))
+    (λ () (typecheck-stmt (parse-stmt '(array-set arr false (* 10 11))) test-env)))                                
+
+(check-equal? 
+        (typecheck-expr (parse-expr '(forall ([i : int] [j : int]) #:where (eq? i j) : (eq? (+ i i) (+ i j)))) test-env)
+        'bool)
+
+(check-exn
+        (regexp (regexp-quote "'when' guard must be of type bool, got int"))
+        (λ () 
+            (typecheck-expr (parse-expr '(forall ([i : int] [j : int]) #:where (+ i j) : (eq? (+ i i) (+ i j)))) test-env)))
+
+(check-exn
+        (regexp (regexp-quote "forall predicate must have type bool, got int"))
+        (λ () 
+            (typecheck-expr (parse-expr '(forall ([i : int] [j : int]) #:where true : (* i j))) test-env)))
+
+(check-exn
+        (regexp (regexp-quote "bad operand type for '+: 'int 'bool"))
+        (λ () 
+            (typecheck-expr (parse-expr '(forall ([i : int] [j : int]) #:where true : (eq? i (+ j true)))) test-env)))
 
 (check-equal? 
     (typecheck-stmt (parse-stmt '(begin 

@@ -228,3 +228,108 @@
                     (set+= i 1)))))))
 
 (check-equal? (parse-fundef big-def) big-def-ast)
+
+; type parsing
+(check-equal? (parse-type 'int) 'int)
+(check-equal? (parse-type 'bool) 'bool)
+(check-equal? (parse-type '(array int)) (ArrayType 'int))
+(check-equal? (parse-type '(array (array int))) (ArrayType (ArrayType 'int)))
+(check-equal? (parse-type '(array bool)) (ArrayType 'bool))
+(check-exn (regexp (regexp-quote "invalid type")) (λ () (parse-type 'bad)))
+
+; forall parsing
+(check-equal? (parse-expr
+    '(forall ([i : int] [j : int]) #:where (eq? i j) : (eq? (+ i i) (+ i j))))
+    (ForallExpr 
+        (list (Decl 'i 'int (None)) (Decl 'j 'int (None)))
+        (BinOpExpr 'eq? (IdExpr 'i) (IdExpr 'j))
+        (BinOpExpr 'eq?
+            (BinOpExpr '+ (IdExpr 'i) (IdExpr 'i))
+            (BinOpExpr '+ (IdExpr 'i) (IdExpr 'j)))))
+
+; array parsing
+(check-equal? (parse-expr '(array-ref arr 0))
+                (ArrayRefExpr (IdExpr 'arr) (NumExpr 0)))
+
+(check-equal? (parse-expr '(new-array int 10)) 
+    (NewArrayExpr 'int (NumExpr 10)))
+
+
+(check-exn (regexp (regexp-quote "bad-expr")) 
+    (lambda ()
+        (parse-expr '(new-array int))))
+
+(check-equal? (parse-expr '(make-array int 10 20 -1 0))
+    (MakeArrayExpr 'int (list (NumExpr 10) (NumExpr 20) (NumExpr -1) (NumExpr 0))))
+
+(check-equal? (parse-stmt '(array-set arr 0 (+ 10 4)))
+    (ArraySetStmt 'arr (NumExpr 0)
+        (BinOpExpr '+ (NumExpr 10) (NumExpr 4))))
+
+(check-equal? (parse-stmt '(array-set arr (- i j) i))
+    (ArraySetStmt 'arr (BinOpExpr '- (IdExpr 'i) (IdExpr 'j))
+        (IdExpr 'i)))
+
+(define insert-sort '(fun (insert-sort [arr : (array int)])
+    (begin
+        (declare
+            [i : int 0]
+            [temp : int])
+        (while (< i (length arr))
+            (begin
+                (declare
+                    [j : int (+ i 1)]
+                    [min-idx : int i])
+                (while (< j (length arr))
+                    (begin
+                        (if (< (array-ref arr j) (array-ref arr min-idx))
+                            (set= min-idx j))
+                        (inc j)))
+                (set= temp (array-ref arr i)) 
+                (array-set arr i (array-ref arr min-idx))
+                (array-set arr min-idx temp)
+                (inc i))))))
+
+(define fst '(fun (fst [arr : (array int)]) -> int
+    (return (array-ref arr 0))))
+
+(check-equal? (parse-expr '(length arr))
+    (ArrayLengthExpr (IdExpr 'arr)))
+
+
+(check-equal? (parse-expr '(length (new-array int 10)))
+    (ArrayLengthExpr (NewArrayExpr 'int (NumExpr 10))))
+
+(define fst-ast (Fundef 'fst 
+    (list 
+        (Decl 'arr (ArrayType 'int) (None))) 'int '() '() 
+    (RetStmt (Some (ArrayRefExpr (IdExpr 'arr) (NumExpr 0))))))
+
+(check-equal? (parse-fundef fst) fst-ast)
+
+(define insert-sort-ast (Fundef 'insert-sort 
+    (list (Decl 'arr (ArrayType 'int) (None))) 'void '() '() 
+    (BeginStmt 
+        (list 
+            (Decl 'i 'int (Some (NumExpr 0))) 
+            (Decl 'temp 'int (None))) 
+        (list 
+            (WhileStmt 
+                (BinOpExpr '< (IdExpr 'i) (ArrayLengthExpr (IdExpr 'arr))) 
+                    (BeginStmt 
+                        (list 
+                            (Decl 'j 'int (Some (BinOpExpr '+ (IdExpr 'i) (NumExpr 1)))) 
+                            (Decl 'min-idx 'int (Some (IdExpr 'i)))) 
+                        (list 
+                            (WhileStmt (BinOpExpr '< (IdExpr 'j) (ArrayLengthExpr (IdExpr 'arr))) 
+                                (BeginStmt '() 
+                                    (list 
+                                        (IfStmt (BinOpExpr '< (ArrayRefExpr (IdExpr 'arr) (IdExpr 'j)) (ArrayRefExpr (IdExpr 'arr) (IdExpr 'min-idx))) 
+                                            (AssignStmt 'set= 'min-idx (IdExpr 'j)) (None))
+                                        (IncStmt 'j)))) 
+                            (AssignStmt 'set= 'temp (ArrayRefExpr (IdExpr 'arr) (IdExpr 'i))) 
+                            (ArraySetStmt 'arr (IdExpr 'i) (ArrayRefExpr (IdExpr 'arr) (IdExpr 'min-idx))) 
+                            (ArraySetStmt 'arr (IdExpr 'min-idx) (IdExpr 'temp)) 
+                            (IncStmt 'i))))))))
+
+(check-equal? (parse-fundef insert-sort) insert-sort-ast)

@@ -101,6 +101,66 @@
             (typecheck-call id args type-env)
             (void))))
 
+(: typecheck-array-length-expr (ArrayLengthExpr TypeEnv -> Type))
+(define (typecheck-array-length-expr expr type-env)
+    (match-let*
+        ([(ArrayLengthExpr arr-expr) expr]
+         [expr-type (typecheck-expr arr-expr type-env)])
+        (match expr-type
+            [(ArrayType _) 'int]
+            [other (error 'length (format "cannot take length of non-array type ~a" other))])))
+
+(: typecheck-new-array-expr (NewArrayExpr TypeEnv -> Type))
+(define (typecheck-new-array-expr expr type-env)
+    (match-let*
+        ([(NewArrayExpr typ len-expr) expr]
+         [len-type (typecheck-expr len-expr type-env)])
+        (match len-type
+            ['int (ArrayType typ)]
+            [other (error 'new-array (format "new-array must be given an integer expression for length, got ~a" other))])))
+
+(: typecheck-array-ref-expr (ArrayRefExpr TypeEnv -> Type))
+(define (typecheck-array-ref-expr expr type-env)
+    (match-let*
+        ([(ArrayRefExpr arr-expr idx-expr) expr]
+         [arr-expr-type (typecheck-expr arr-expr type-env)]
+         [idx-expr-type (typecheck-expr idx-expr type-env)])
+         (unless (ArrayType? arr-expr-type)
+            (error 'array-ref (format "invalid array-ref expression; expected array, got ~a" arr-expr-type)))
+
+         (unless (equal? idx-expr-type 'int)
+            (error 'array-ref (format "invalid array-ref expression; expected index of type int, got ~a" idx-expr-type)))
+
+        (ArrayType-elem-type arr-expr-type)))
+
+(: typecheck-forall-expr (ForallExpr TypeEnv -> Type))
+(define (typecheck-forall-expr expr type-env)
+    (match-let*
+        ([(ForallExpr decls when-expr pred-expr) expr]
+         [new-env (add-bindings type-env decls)]
+         [when-type (typecheck-expr when-expr new-env)]
+         [pred-type (typecheck-expr pred-expr new-env)])
+
+        (unless (equal? 'bool when-type)
+            (error 'forall (format "'when' guard must be of type bool, got ~a" when-type)))
+        
+        (unless (equal? 'bool pred-type)
+            (error 'forall (format "forall predicate must have type bool, got ~a" pred-type)))
+        'bool))
+
+(: typecheck-make-array-expr (MakeArrayExpr TypeEnv -> Type))
+(define (typecheck-make-array-expr expr type-env)
+    (match-let*
+        ([(MakeArrayExpr typ vs) expr]
+         [expr-types (map (lambda ([e : Expr]) (typecheck-expr e type-env)) vs)])
+        
+        (let
+            ([mismatch (filter (lambda ([t : Type]) (not (equal? t typ))) expr-types)])
+                (unless (empty? mismatch)
+                    (error 'make-array 
+                        (format "type mismatch: got types ~a when expecting ~a" mismatch typ))))
+        (ArrayType typ)))
+
 ; typechecking expressions
 (: typecheck-expr (Expr TypeEnv -> Type))
 (define (typecheck-expr expr type-env)
@@ -112,6 +172,11 @@
         [(UnOpExpr _ _) (typecheck-unop expr type-env)]
         [(OldExpr ex) (typecheck-expr ex type-env)]
         [(CallExpr _ _) (typecheck-call-expr expr type-env)]
+        [(ArrayLengthExpr _) (typecheck-array-length-expr expr type-env)]
+        [(ArrayRefExpr _ _) (typecheck-array-ref-expr expr type-env)]
+        [(NewArrayExpr _ _) (typecheck-new-array-expr expr type-env)]
+        [(MakeArrayExpr _ _) (typecheck-make-array-expr expr type-env)]
+        [(ForallExpr _ _ _) (typecheck-forall-expr expr type-env)]
         ['@result (typecheck-result-expr type-env)]))
 
 (: bind-opt (All (A B) (-> (A -> (Opt B)) (Opt A) (Opt B))))
@@ -193,11 +258,15 @@
         [(Some a) a]
         [(None) default]))
 
+(: add-bindings (TypeEnv (Listof Decl) -> TypeEnv))
+(define (add-bindings type-env decls)
+    (foldl (lambda ([decl : Decl] [env : TypeEnv]) (add-binding env decl)) type-env decls))
+
 (: typecheck-begin-stmt (BeginStmt TypeEnv -> Void))
 (define (typecheck-begin-stmt begin-stmt type-env)
     (match-let*
         ([(BeginStmt decls stmts) begin-stmt]
-        [new-env (foldl (lambda ([decl : Decl] [env : TypeEnv]) (add-binding env decl)) type-env decls)])
+        [new-env (add-bindings type-env decls)])
         (for/list: : (Listof Void) ([stmt stmts])
             (typecheck-stmt stmt new-env)))
     (void))
@@ -241,22 +310,37 @@
         (typecheck-stmt body new-env2)
         (check-return-paths fundef)
         (add-binding top-env fun-binding)))
+    
+(: typecheck-array-set-stmt (ArraySetStmt TypeEnv -> Void))
+(define (typecheck-array-set-stmt stmt type-env)
+    (match-let*
+        ([(ArraySetStmt arr-lv idx-expr val-expr) stmt]
+         [arr-type (lookup type-env arr-lv)]
+         [idx-type (typecheck-expr idx-expr type-env)]
+         [val-type (typecheck-expr val-expr type-env)])
+
+        (unless (ArrayType? arr-type)
+            (error 'array-set (format "cannot array-set non-array type ~a" arr-type)))
+        
+        (unless (equal? 'int idx-type)
+            (error 'array-set (format "array-set index must be of type int, got ~a" idx-type)))
+
+        (unless (equal? (ArrayType-elem-type arr-type) val-type)
+            (error 'array-set (format "array-set type mismatch: expected value of type ~a got ~a" 
+                                    (ArrayType-elem-type arr-type) val-type)))))
 
 (: check-return-path (Stmt -> Boolean))
 (define (check-return-path stmt)
     (match stmt
-        [(AssignStmt _ _ _) #f]
         [(RetStmt _) #t]
         [(IfStmt _ t e) 
             (match e
                 [(Some els) (and (check-return-path t) (check-return-path els))]
                 [other #f])]
-        [(WhileStmt _ _) #f]
-        [(IncStmt _) #f]
-        [(DecStmt _) #f]
         [(BeginStmt _ stmts)
             (foldl (lambda ([t : Boolean] [cur : Boolean]) (or t cur)) #f (map check-return-path stmts))]
-        [(AnnoStmt _ s) (check-return-path s)]))
+        [(AnnoStmt _ s) (check-return-path s)]
+        [other #f]))
 
 (: check-return-paths (Fundef -> Void))
 (define (check-return-paths fundef)
@@ -292,6 +376,7 @@
         [(IfStmt _ _ _) (typecheck-if-stmt stmt type-env)]
         [(WhileStmt g b) (typecheck-while-stmt stmt type-env)]
         [(AssignStmt _ _ _) (typecheck-assign-stmt stmt type-env)]
+        [(ArraySetStmt _ _ _) (typecheck-array-set-stmt stmt type-env)]
         [(IncStmt lval) (typecheck-inc-stmt stmt type-env)]
         [(DecStmt lval) (typecheck-dec-stmt stmt type-env)]
         [(RetStmt _) (typecheck-ret-stmt stmt type-env)]
