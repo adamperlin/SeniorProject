@@ -38,7 +38,21 @@
 
 (define max3 (parse-fundef 
     '(fun (max3 [x : int] [y : int] [z : int]) -> int
-        (ensures (or (eq? @result y) (eq? @result z)))
+        (ensures (or (eq? @result x) (or (eq? @result y) (eq? @result z))))
+        (ensures (and (>= @result x) (and (>= @result y) (>= @result z))))
+        (begin
+            (if (> x y)
+                (if (> x z)
+                    (return x))
+                (if (> y z)
+                    (return y)))
+            (return z)))))
+
+
+(define max3-alt (parse-fundef 
+    '(fun (max3 [x : int] [y : int] [z : int]) -> int
+        (ensures (or (eq? @result x) (or (eq? @result y) (eq? @result z))))
+        (ensures (and (>= @result x) (and (>= @result y) (>= @result z))))
         (if (> x y)
             (if (> x z)
                 (return x)
@@ -77,15 +91,13 @@
 (typecheck-function count-up (hash))
 
 (define sum (parse-fundef '(fun (sum [n : int]) -> int
-   (requires (and (>= n 0) (< n 100)))
-  ; (requires (>= n 0))
+    (requires (and (>= n 0) (< n 100)))
     (ensures (eq? @result (/ (* n (+ n 1)) 2)))
     (begin
         (declare 
             [i : int 1]
             [sum : int 0])
         (while (<= i n)
-;            ((invariant (eq? sum (/ (* i (- i 1)) 2)))
             (begin
                 (set+= sum i)
                 (set+= i 1)))
@@ -101,5 +113,8 @@
 ;(check-equal? (verify-fun sum) '())
 ;(printf "dynamically interpreted: ~v\n" (interp-expr (CallExpr 'sum (list (NumExpr 99))) frame))
 
+; (verify-fun sum)
+; (verify-fun count-up)
+(printf "verify-fun max3\n")
+;(verify-fun max3)
 (verify-fun sum)
-(verify-fun count-up)

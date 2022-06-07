@@ -351,6 +351,22 @@
                         (set+= i 1)))
             (return i)))))
 
+(define sum-even (parse-fundef '(fun (sum-even [n : int]) -> int
+                                    (requires (and (>= n 1) (< n 100))) 
+                                    (ensures (>= @result 0))
+                                    (ensures (eq? @result (* n (+ n 1))))
+                                (begin
+                                    (declare
+                                        [sum : int 0]
+                                        [i : int 1])
+                                    (while (<= i (* 2 n))
+                                        (begin 
+                                            (if (eq? (% i 2) 0)
+                                                (set+= sum i))
+                                            (inc i)))
+                                    (return sum)))))
+(typecheck-function sum-even (hash))
+
 ; ; function calls
 (define test-env (hash
     'max max-fun
@@ -363,6 +379,7 @@
      'sum sum
      'gcd gcd
      'count-up count-up
+     'sum-even sum-even
     'has-contract has-contract
     'breaks-ensures breaks-ensures))
 
@@ -372,6 +389,7 @@
 (check-equal? (interp-expr (CallExpr 'fact (list (NumExpr 10))) test-frame7) (make-int-value 3628800))
 (check-equal? (interp-expr (CallExpr 'h (list (NumExpr 3))) test-frame7) (make-int-value 60))
 (check-equal? (interp-expr (CallExpr 'gcd (list (NumExpr 35) (NumExpr 14))) test-frame7) (make-int-value 7))
+(check-equal? (interp-expr (CallExpr 'sum-even (list (NumExpr 20))) test-frame7) (make-int-value 420))
 
 ; basic contract testing
 (check-equal? (interp-expr (CallExpr 'has-contract (list (NumExpr 1))) test-frame7) (make-int-value 2))
@@ -384,6 +402,7 @@
         (interp-expr (CallExpr 'breaks-ensures (list (NumExpr 1))) test-frame7)))
 
 (check-equal? (interp-expr (CallExpr 'sum (list (NumExpr 12))) test-frame7) (make-int-value 78))
+
 
 (define prog (list
     max-fun 

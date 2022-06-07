@@ -516,10 +516,7 @@
 (define-syntax-rule 
     (define-finite (id param ...) body ...)
     (define (id param ...)
-        ; todo: improve error message here
        (assert (> (depth-limit) 0) (format "loop depth exceeded in function ~v\n" id))
-    ;    (when (<= (depth-limit) 0) 
-    ;     (raise "loop depth exceeded"))
         (parameterize ([depth-limit (sub1 (depth-limit))])
             body ...)))
 
@@ -672,21 +669,13 @@
         [(BoolValue val) val]
         [other (error 'unwrap-void (format "value ~v cannot be unwrapped" val))]))
 
-; all variables referenced in body but declared outside of body
-; need to be made symbolic and re-inserted in the current scope
-; (define (capture-referenced body))
+(define type-to-predicate (hash
+    'int IntValue?
+    'bool BoolValue?
+    'void VoidValue?))
 
-; (define (induct ann body-body frame)
-;     (match-let
-;         ([(Anno kind expr) ann])
-;     )))
-
-; (define (verify-loop while-stmt)
-;     (match-let
-;         ([(WhileStmt guard body) while-stmt])
-;         (match body
-;             [(AnnoStmt ann body-body) (induct ann body-body)]
-;             [other '()])))
+(define (val-matches-ty val ty)
+    ((hash-ref type-to-predicate ty) val))
 
 (define (verify-fun fundef)
     (match-let*
@@ -699,48 +688,25 @@
                 fargs))
             (define cur-scope (Scope 0 scope-bindings))
             (define frame1 (push-scope frame cur-scope))
-            ;(store-old frame fargs)
-            ; evaluate 'requires' preconditions
-            ; (for/list ([req requires])
-            ;    (assume (unwrap (eval-contract-sym req frame1))))
-
-            ; (for/list ([req requires])
-            ;    (assume (unwrap (eval-contract-sym req frame1))))
 
             (define signal*frames (interp-stmt body frame1))
             (clear-vc!)
             (for/list ([req requires])
                (assume (unwrap (eval-contract-sym req frame1))))
-            ;(printf "!!! ~v\n" (verify (assert (vc-asserts (vc)))))
-            ;(printf "vc-asserts (1) ~v\n" (walk-expr (vc-asserts (vc))))
-            ;(printf "vc-assumes (2) ~v\n" (walk-expr (vc-assumes (vc))))
-            
-            ;(printf "current accumulated condition counter-example: ~v\n" (verify (assert (vc-asserts (vc)))))
-            (define results (for/all ([f (cdr signal*frames)])
+
+            (define results (for/all ([f (cdr signal*frames) #:exhaustive])
                 ;(printf "frame-return: ~v\n" (Frame-return f))
-                (for/list ([en ensures])
-                                ;(printf "vc-assumes: ~v\n" (walk-expr (vc-assumes (vc))))
-                                ;(printf "meets criteria: ~v\n" (solve (assert (vc-assumes (vc)))))
-                                ;(printf "vc: ~v\n" (vc))
-                                ;(printf "verifying contract: ~v\n" (eval-contract-sym en f))
-                                (define ver-result (verify (assert (unwrap (eval-contract-sym en f)))))
-                                (when (not (equal? ver-result (unsat)))
-                                     (printf "counterexample: ~v\n" ver-result))
-                                ver-result)))
+                (define ret (Frame-return f))
+                (when (val-matches-ty ret rtype)
+                    ;(printf "vc-assumes: ~v\n" (vc-assumes (vc)))
+                    (for/list ([en ensures])
+                                    ;(printf "unwrapped: ~v\n" (unwrap (eval-contract-sym en f)))
+                                    (verify (assert (unwrap (eval-contract-sym en f))))))))
              (filter 
                 (λ (r) (not (equal? r (unsat)))) results))))
 
-; (define test-decls (list (Decl 'i 'int (Some (NumExpr 1)))
-;     (Decl 'j 'int (Some (UnOpExpr 'neg (IdExpr 'i))))))
-; (eval-decls test-decls (new-frame))
 (define (walk-expr e)
     (match e
         [(expression op child1 child2) (string-append  "(" (format "~v" op) " " (walk-expr child1) " " (walk-expr child2) ")")]
         [(expression op child) (string-append "(" (format "~v" op) " " (walk-expr child) ")")]
         [else (format "~s" else)]))
-
-; (define (walk-expr e)
-;     (match e
-;         [(constant id ty) (printf "(~v ~v)" id ty)]
-;         [(expression op child1 child2) (printf "(~v ~v ~v)" op (walk-expr child1) (walk-expr child2))]
-;         [(expression op child) (printf "(~v ~v)" op (walk-expr child))]))
